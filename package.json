@@ -1,0 +1,12 @@
+{
+  "name": "jwks-verify-kit",
+  "version": "0.1.0",
+  "description": "驗外部 IdP 的非對稱 JWT（ES256/384/512）+ JWKS 公鑰快取，零依賴 fail-closed",
+  "main": "index.js",
+  "scripts": {
+    "example": "node example.js"
+  },
+  "keywords": [],
+  "author": "Jeffrey0117",
+  "license": "MIT"
+}
