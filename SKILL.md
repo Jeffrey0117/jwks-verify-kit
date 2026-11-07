@@ -55,7 +55,11 @@ env 只要兩個：`LETMEUSE_APP_ID`、`LETMEUSE_BASE_URL`（或 `LETMEUSE_JWKS_
 
 1. `alg` 是**白名單**嗎？（黑名單會漏 `alg:none`）
 2. `kid` 必填嗎？不符時有沒有「退回第一把金鑰」（`|| keys[0]`）？那會讓撤銷的金鑰繼續生效
-3. `exp` 是**必填且必須是數字**嗎？（`if (typeof exp === 'number' && exp <= now)` = 沒 exp 等於永不過期）
+3. `exp` 是**必填且必須是數字**嗎？三種壞形狀，生態系都踩過：
+   - `if (payload.exp && payload.exp * 1000 < Date.now())` ← **最常見**，沒 exp 直接放行
+   - `if (typeof payload.exp === 'number' && ...)` ← 同上
+   - `if (!payload.exp || payload.exp * 1000 < Date.now())` ← 沒 exp 會擋，但字串型 exp 兩邊都躲過（`!"abc"` 是 false、`"abc"*1000` 的 NaN 比較也是 false）
+   ⚠️ **用 jose 的 `jwtVerify` 不代表安全**：它會擋過期與非數字 exp，但**預設不要求 exp 存在** → 沒有 exp 的 token 照樣通過。要寫 `requiredClaims: ['exp']`。這種「缺少某樣東西」的問題 kit-kit audit 抓不到（它只能比對出現的文字），只能靠讀碼。
 4. 租戶 claim（LetMeUse 的 `app`）有強制嗎？自己沒設 appId 時是**拒絕**還是放行？
 5. `sub` 有檢查型別嗎？（非字串的 sub 流進 DB 當 key 會變 500 或撞號。本 kit 的 `requireSubject` 預設開啟）
 6. JWKS 抓取有**逾時**嗎？（node 的 fetch 沒有預設值）

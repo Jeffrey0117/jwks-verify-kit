@@ -29,10 +29,10 @@
     {
       "id": "exp-conditional-check",
       "severity": "critical",
-      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:typeof\\s+\\w+\\.exp\\s*===\\s*['\"]number['\"]\\s*&&|!\\s*\\w+\\.exp\\s*\\|\\|)",
+      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:typeof\\s+\\w+\\.exp\\s*===\\s*['\\\"]number['\\\"]\\s*&&|!\\s*\\w+\\.exp\\s*\\|\\||\\b(payload|claims|decoded|parsed|token|p)\\.exp\\s*&&)",
       "files": "^(?!(test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/)(?!.*(__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
-      "rule": "exp 是條件式檢查 → 沒有 exp 或 exp 是字串的 token 等於永不過期。`!payload.exp ||` 也中：字串型 exp 會兩邊都躲過（`!\"abc\"` 是 false、`\"abc\" < now` 的 NaN 比較也是 false）。短 exp 往往是這套設計唯一的撤銷機制。",
-      "fix": "exp 必須『必填且是有限數字』。"
+      "rule": "exp 是條件式檢查 → 沒有 exp 的 token 等於永不過期。三種壞形狀：`payload.exp && payload.exp*1000 < Date.now()`（沒 exp 直接放行，生態系最常見）、`typeof exp === 'number' &&`（同上）、`!payload.exp ||`（沒 exp 會擋，但字串型 exp 兩邊都躲過：`!\"abc\"` 是 false、`\"abc\"*1000` 的 NaN 比較也是 false）。短 exp 往往是這套設計唯一的撤銷機制。",
+      "fix": "exp 必須『必填且是有限數字』：`if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return null`。用 jose 的 jwtVerify 也要明確要求它（預設不要求 exp 存在）：`jwtVerify(token, jwks, { algorithms:['ES256'], requiredClaims:['exp'] })`。"
     },
     {
       "id": "jwks-first-key-fallback",
