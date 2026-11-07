@@ -9,7 +9,9 @@ const JWKS = { keys: [toJwk(publicKey, "kid-1")] };
 
 const cacheOpts = (extra = {}) => ({
   url: "https://idp.test/jwks",
-  refreshMs: 0, // 測試裡不要定時器
+  refreshMs: 0,              // 測試裡不要定時器
+  minRefreshIntervalMs: 0,   // 手動 refresh 的節流在測試裡關掉（另有專門測試）
+  onError: () => {},         // 預設是 console.error,測試裡別噴滿螢幕
   ...extra,
 });
 
@@ -191,4 +193,129 @@ test("start() 回第一次抓取的 promise,stop() 收掉定時器", async () =>
   await cache.start();
   assert.ok(cache.getKey("kid-1"), "await start() 之後就該是暖的");
   cache.stop();
+});
+
+// ── review 後補上的（2026-11-08）────────────────────────────────────────────
+
+test("手動 refresh() 有最小間隔（別讓宿主把它接成對 IdP 的放大器）", async () => {
+  const impl = fakeFetch(JWKS);
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl, minRefreshIntervalMs: 60_000 }));
+  await cache.refresh();
+  for (let i = 0; i < 20; i += 1) await cache.refresh();
+  assert.equal(impl.calls.length, 1, "節流後只該有第一次");
+  // 內部的定時刷新/預熱走 force,不受節流影響
+  await cache.start();
+  assert.equal(impl.calls.length, 2);
+  cache.stop();
+});
+
+test("🔒 JWKS 金鑰數有上限（createPublicKey 不便宜,兩萬把會阻塞 event loop）", async () => {
+  const many = { keys: Array.from({ length: 200 }, (_, i) => toJwk(publicKey, `k${i}`)) };
+  const errors = [];
+  const cache = createJwksCache(cacheOpts({
+    fetchImpl: fakeFetch(many), maxKeys: 10, onError: (e) => errors.push(e.message),
+  }));
+  await cache.refresh();
+  assert.equal(cache.stats().keys, 10);
+  assert.ok(errors.some((m) => /超過上限/.test(m)), "超量要大聲報");
+});
+
+test("🔒 JWKS 裡出現私鑰材料（d）→ 拒收該把並大聲報（IdP 正在洩漏簽章金鑰）", async () => {
+  const { privateKey: pk } = keypair();
+  const leaky = { keys: [{ ...pk.export({ format: "jwk" }), kid: "leaked", use: "sig" }, toJwk(publicKey, "good")] };
+  const errors = [];
+  const cache = createJwksCache(cacheOpts({ fetchImpl: fakeFetch(leaky), onError: (e) => errors.push(e.message) }));
+  await cache.refresh();
+  assert.equal(cache.getKey("leaked"), null);
+  assert.ok(cache.getKey("good"));
+  assert.ok(errors.some((m) => /私鑰材料/.test(m)), "要明確指出 IdP 在洩漏私鑰");
+});
+
+test("🔒 重複 kid 取第一筆（惡意項目附加在合法 JWKS 後面是現實形狀）", async () => {
+  const attacker = keypair();
+  const payload = { keys: [toJwk(publicKey, "dup"), toJwk(attacker.publicKey, "dup")] };
+  const errors = [];
+  const cache = createJwksCache(cacheOpts({ fetchImpl: fakeFetch(payload), onError: (e) => errors.push(e.message) }));
+  await cache.refresh();
+  const got = cache.getKey("dup");
+  assert.ok(got);
+  assert.equal(
+    got.export({ format: "jwk" }).x,
+    publicKey.export({ format: "jwk" }).x,
+    "必須是第一筆（真的那把）,不是被後面覆蓋",
+  );
+  assert.ok(errors.some((m) => /重複的 kid/.test(m)));
+});
+
+test("fetch 帶 redirect:error（JWKS 是信任根,302 等於無聲搬家）", async () => {
+  const impl = fakeFetch(JWKS);
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl }));
+  await cache.refresh();
+  assert.equal(impl.calls[0].init.redirect, "error");
+});
+
+test("曲線不在 algorithms 白名單內的金鑰會被過濾掉", async () => {
+  const p384 = keypair("secp384r1");
+  const payload = { keys: [toJwk(p384.publicKey, "k384"), toJwk(publicKey, "k256")] };
+  const cache = createJwksCache(cacheOpts({ fetchImpl: fakeFetch(payload), algorithms: ["ES256"] }));
+  await cache.refresh();
+  assert.equal(cache.getKey("k384"), null);
+  assert.ok(cache.getKey("k256"));
+});
+
+test("壞掉的 JWK（createPublicKey 丟錯）會被跳過並報出來", async () => {
+  const payload = { keys: [{ kty: "EC", crv: "P-256", kid: "bad", x: "!!!", y: "!!!" }, toJwk(publicKey, "ok")] };
+  const errors = [];
+  const cache = createJwksCache(cacheOpts({ fetchImpl: fakeFetch(payload), onError: (e) => errors.push(e.message) }));
+  await cache.refresh();
+  assert.equal(cache.getKey("bad"), null);
+  assert.ok(cache.getKey("ok"));
+  assert.ok(errors.some((m) => /載入失敗/.test(m)));
+});
+
+test("stats() 帶 kids 與 lastMissKid（輪換事故靠數字看不出來）", async () => {
+  const cache = createJwksCache(cacheOpts({ fetchImpl: fakeFetch(JWKS), missCooldownMs: 60_000 }));
+  await cache.refresh();
+  assert.deepEqual(cache.stats().kids, ["kid-1"]);
+  assert.equal(cache.stats().lastMissKid, null);
+  cache.getKey("rotated-kid-9");
+  await cache.whenIdle();
+  assert.equal(cache.stats().lastMissKid, "rotated-kid-9");
+});
+
+test("getKeyAsync 在冷卻期內不排隊等別人的抓取（serverless 計費放大）", async () => {
+  // 500 個帶亂 kid 的匿名請求若全掛在同一個 in-flight fetch 上,等於每個請求
+  // 都被計費等待。只有「真的發動抓取」的那次才該等。
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const impl = async () => {
+    await gate;
+    return { ok: true, status: 200, json: async () => JWKS };
+  };
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl, missCooldownMs: 60_000, timeoutMs: 0 }));
+  const first = cache.getKeyAsync("unknown-a"); // 這次發動抓取 → 會等
+  await new Promise((r) => setImmediate(r));
+  const t0 = Date.now();
+  const second = await cache.getKeyAsync("unknown-b"); // 冷卻中 → 不該等
+  const elapsed = Date.now() - t0;
+  assert.equal(second, null);
+  assert.ok(elapsed < 50, `第二個請求不該排隊,實際等了 ${elapsed}ms`);
+  release();
+  await first;
+  cache.stop();
+});
+
+test("timeoutMs 共用單一期限（不是 fetch 與 json 各給一次）", async () => {
+  // 兩段各給完整逾時的話,慢速 IdP 可以讓一個請求卡 2×timeoutMs。
+  const impl = async () => ({
+    ok: true,
+    status: 200,
+    json: () => new Promise(() => {}), // json 永遠不 resolve
+  });
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl, timeoutMs: 120 }));
+  const t0 = Date.now();
+  await cache.refresh();
+  const elapsed = Date.now() - t0;
+  assert.match(cache.stats().lastError, /timed out/);
+  assert.ok(elapsed < 240, `總預算該是 ~120ms 而非 240ms,實際 ${elapsed}ms`);
 });

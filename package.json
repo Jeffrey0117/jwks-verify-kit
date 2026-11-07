@@ -4,9 +4,35 @@
   "description": "驗外部 IdP 的非對稱 JWT（ES256/384/512）+ JWKS 公鑰快取，零依賴 fail-closed",
   "main": "index.js",
   "scripts": {
+    "test": "node --test test/verify.test.js test/jwks-cache.test.js test/verifier.test.js",
     "example": "node example.js"
   },
-  "keywords": [],
+  "keywords": [
+    "jwt",
+    "jwks",
+    "es256",
+    "ecdsa",
+    "token-verification",
+    "letmeuse",
+    "zero-dependency",
+    "fail-closed"
+  ],
   "author": "Jeffrey0117",
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "src/",
+    "example.js",
+    "README.md",
+    "SKILL.md",
+    "kit-checks.json",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jeffrey0117/jwks-verify-kit.git"
+  }
 }

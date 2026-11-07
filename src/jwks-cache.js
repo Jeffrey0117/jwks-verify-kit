@@ -5,8 +5,8 @@
 //
 // 🔒 fail-closed：抓不到金鑰時 getKey 回 null，驗證一律失敗。寧可拒絕真使用者
 // 也不放行偽造 token。但 **fail-closed 必須看得見** —— 所以有 onError 與
-// stats()，讓宿主能印 log、把狀態掛上 /health。不然 IdP 一掛就是「全部 401
-// 且零診斷」，查三小時都查不到。
+// stats()，而 onError 的預設值是 `console.error` 而不是 noop：預設安靜等於
+// 「IdP 一掛就全部 401 且零線索」，那正是這個檔要避免的事。
 
 const crypto = require("node:crypto");
 const { CRV_TO_ALG } = require("./algorithms");
@@ -17,26 +17,39 @@ const DEFAULT_TIMEOUT_MS = 5000;
 // 連續抓不到這麼久之後，寧可全部拒絕也不要拿「不知道多舊」的公鑰繼續放行。
 // 給得寬鬆（一天）：IdP 短暫停機不該讓所有人當場失效。
 const DEFAULT_MAX_STALE_MS = 24 * 60 * 60 * 1000;
+// 手動 refresh() 的最小間隔。沒有這道閘，宿主把 refresh 掛到管理端點上就等於
+// 開放一個對 IdP 的放大器（生態系有前例：連續打 refresh 把上游打到鎖定，
+// 然後空清單覆蓋掉整個快取）。
+const DEFAULT_MIN_REFRESH_INTERVAL_MS = 3000;
+// JWKS 正常只有個位數把金鑰。上限存在的理由是 `createPublicKey` 不便宜：
+// 實測兩萬把會讓 event loop 阻塞 1.2 秒，而且每次刷新都重來一遍。
+const DEFAULT_MAX_KEYS = 50;
 const WHEN_IDLE_MAX_HOPS = 10;
 
-/** JWK → KeyObject。只收得起 EC 簽章金鑰，其餘回 null（跳過，不害整批）。 */
+/**
+ * JWK → KeyObject。只收得起 EC 簽章公鑰，其餘回 null（跳過，不害整批）。
+ * 第二個回傳值是「跳過的原因」，給呼叫端決定要不要大聲報。
+ */
 function toPublicKey(jwk, allowedAlgs) {
-  if (!jwk || typeof jwk !== "object") return null;
-  if (typeof jwk.kid !== "string" || !jwk.kid) return null;
-  if (jwk.kty !== "EC") return null;
+  if (!jwk || typeof jwk !== "object") return [null, "不是物件"];
+  if (typeof jwk.kid !== "string" || !jwk.kid) return [null, "沒有 kid"];
+  if (jwk.kty !== "EC") return [null, `kty=${jwk.kty} 不是 EC`];
+  // 🔒 JWKS 裡出現私鑰材料（EC 的 `d`）表示 IdP 正在洩漏它的簽章金鑰。這個
+  // kit 是唯一站在能發現它的位置上的元件 —— 大聲報出來，而不是默默當公鑰用。
+  if (jwk.d !== undefined) return [null, `kid=${jwk.kid} 的 JWK 含私鑰材料（d）—— IdP 正在洩漏簽章金鑰！`];
   const impliedAlg = CRV_TO_ALG[jwk.crv];
-  if (!impliedAlg) return null;
+  if (!impliedAlg) return [null, `crv=${jwk.crv} 不支援`];
   // JWK 自己宣告的 alg 要跟曲線一致，且在宿主允許的白名單內
-  if (jwk.alg && jwk.alg !== impliedAlg) return null;
+  if (jwk.alg && jwk.alg !== impliedAlg) return [null, `kid=${jwk.kid} 的 alg 與曲線不符`];
   if (Array.isArray(allowedAlgs) && allowedAlgs.length > 0 && !allowedAlgs.includes(impliedAlg)) {
-    return null;
+    return [null, null]; // 不在白名單內是正常過濾，不用報
   }
-  if (jwk.use && jwk.use !== "sig") return null; // 加密用的金鑰不拿來驗簽
-  if (Array.isArray(jwk.key_ops) && !jwk.key_ops.includes("verify")) return null;
+  if (jwk.use && jwk.use !== "sig") return [null, null]; // 加密用的金鑰不拿來驗簽
+  if (Array.isArray(jwk.key_ops) && !jwk.key_ops.includes("verify")) return [null, null];
   try {
-    return crypto.createPublicKey({ key: jwk, format: "jwk" });
-  } catch (e) {
-    return null;
+    return [crypto.createPublicKey({ key: jwk, format: "jwk" }), null];
+  } catch (err) {
+    return [null, `kid=${jwk.kid} 載入失敗：${err.message}`];
   }
 }
 
@@ -67,11 +80,13 @@ function withTimeout(promise, ms) {
  *   url: string,
  *   algorithms?: string[],
  *   fetchImpl?: Function,
- *   refreshMs?: number,       // 0 = 不做定時刷新
+ *   refreshMs?: number,              // 0 = 不做定時刷新
  *   missCooldownMs?: number,
- *   timeoutMs?: number,       // 0 = 不加逾時（只應在測試裡關掉）
- *   maxStaleMs?: number,      // 0 = 不做 stale fail-closed
- *   onError?: (err: Error) => void,
+ *   minRefreshIntervalMs?: number,   // 手動 refresh() 的節流
+ *   timeoutMs?: number,              // 0 = 不加逾時（只應在測試裡關掉）
+ *   maxStaleMs?: number,             // 0 = 不做 stale fail-closed
+ *   maxKeys?: number,
+ *   onError?: (err: Error) => void,  // 預設 console.error
  * }} options
  */
 function createJwksCache(options = {}) {
@@ -80,15 +95,23 @@ function createJwksCache(options = {}) {
   const fetchImpl = options.fetchImpl || ((...args) => globalThis.fetch(...args));
   const refreshMs = options.refreshMs != null ? options.refreshMs : DEFAULT_REFRESH_MS;
   const missCooldownMs = options.missCooldownMs != null ? options.missCooldownMs : DEFAULT_MISS_COOLDOWN_MS;
+  const minRefreshIntervalMs = options.minRefreshIntervalMs != null
+    ? options.minRefreshIntervalMs
+    : DEFAULT_MIN_REFRESH_INTERVAL_MS;
   const timeoutMs = options.timeoutMs != null ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
   const maxStaleMs = options.maxStaleMs != null ? options.maxStaleMs : DEFAULT_MAX_STALE_MS;
-  const onError = typeof options.onError === "function" ? options.onError : () => {};
+  const maxKeys = options.maxKeys != null ? options.maxKeys : DEFAULT_MAX_KEYS;
+  // 預設大聲：安靜的 fail-closed 就是無聲故障
+  const onError = typeof options.onError === "function"
+    ? options.onError
+    : (err) => { console.error("[jwks-verify-kit]", err.message); };
 
   let keysByKid = new Map();
   let lastAttemptAt = 0;
   let lastSuccessAt = 0;
   let lastMissFetchAt = 0;
   let lastError = null;
+  let lastMissKid = null;
   let inFlight = null;
   let timer = null;
 
@@ -108,16 +131,38 @@ function createJwksCache(options = {}) {
         && typeof AbortSignal.timeout === "function"
         ? AbortSignal.timeout(timeoutMs)
         : undefined;
-      const res = await withTimeout(fetchImpl(url, signal ? { signal } : undefined), timeoutMs);
+      // redirect: "error" —— JWKS 回應**就是**信任根，一個 302 等於無聲把它
+      // 搬到別的主機去。寧可壞掉也不要跟著跳。
+      const init = { redirect: "error", ...(signal ? { signal } : {}) };
+      // 單一期限：fetch 與 res.json() 共用同一個預算。各給一次完整逾時的話,
+      // 慢速 IdP 可以讓走 getKeyAsync 的請求卡 2×timeoutMs（預設 10 秒）。
+      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
+      const remaining = () => (deadline > 0 ? Math.max(1, deadline - Date.now()) : 0);
+      const res = await withTimeout(fetchImpl(url, init), remaining());
       if (!res || !res.ok) throw new Error(`JWKS HTTP ${res ? res.status : "no response"}`);
-      const data = await withTimeout(Promise.resolve(res.json()), timeoutMs);
+      const data = await withTimeout(Promise.resolve(res.json()), remaining());
       if (!data || !Array.isArray(data.keys)) {
         throw new Error("JWKS 回應格式不正確（keys 不是陣列）");
       }
+      if (maxKeys > 0 && data.keys.length > maxKeys) {
+        report(new Error(
+          `JWKS 回了 ${data.keys.length} 把金鑰，超過上限 ${maxKeys} —— 只取前 ${maxKeys} 把`
+          + "（createPublicKey 不便宜，大量金鑰會阻塞 event loop）",
+        ));
+      }
+      const slice = maxKeys > 0 ? data.keys.slice(0, maxKeys) : data.keys;
       const next = new Map();
-      for (const jwk of data.keys) {
-        const key = toPublicKey(jwk, algorithms);
-        if (key) next.set(jwk.kid, key);
+      for (const jwk of slice) {
+        const [key, reason] = toPublicKey(jwk, algorithms);
+        if (reason) report(new Error(`JWKS: ${reason}`));
+        if (!key) continue;
+        // 重複 kid 取**第一筆**。「惡意項目附加在合法 JWKS 後面」是現實形狀，
+        // last-wins 會讓後面那筆靜默覆蓋掉真的金鑰。
+        if (next.has(jwk.kid)) {
+          report(new Error(`JWKS 有重複的 kid=${jwk.kid} —— 保留第一筆，忽略後面的`));
+          continue;
+        }
+        next.set(jwk.kid, key);
       }
       // 🔒 格式正確的 200 就是權威答案，**即使 keys 是空的**，所以整批換掉。
       // 「空的不覆蓋舊快取」看似保守，實際會讓緊急撤銷永遠不生效：IdP 私鑰
@@ -137,9 +182,16 @@ function createJwksCache(options = {}) {
     }
   }
 
-  /** 抓一次 JWKS。併發呼叫共用同一個 in-flight promise。 */
-  function refresh() {
+  /**
+   * 抓一次 JWKS。併發呼叫共用同一個 in-flight promise。
+   * `force` 由內部的定時刷新/預熱使用，會跳過最小間隔節流。
+   */
+  function refresh(force = false) {
     if (inFlight) return inFlight;
+    if (!force && minRefreshIntervalMs > 0 && lastAttemptAt > 0
+      && Date.now() - lastAttemptAt < minRefreshIntervalMs) {
+      return Promise.resolve(); // 節流：擋掉宿主把 refresh 接到端點上的放大效果
+    }
     inFlight = doRefresh().finally(() => {
       inFlight = null;
       // 冷卻從「結束」算起：慢速或逾時的抓取若從開始算，等於完全沒冷卻
@@ -152,15 +204,21 @@ function createJwksCache(options = {}) {
     return maxStaleMs > 0 && lastSuccessAt > 0 && Date.now() - lastSuccessAt > maxStaleMs;
   }
 
-  /** 未知 kid（可能剛輪換）→ 在背景補抓一次，但有獨立冷卻。 */
+  /**
+   * 未知 kid（可能剛輪換）→ 在背景補抓一次，但有獨立冷卻。
+   * 回 { promise, started }：`started` 才代表「這次 miss 真的發動了抓取」，
+   * getKeyAsync 只在那種情況下才等 —— 否則 500 個帶亂 kid 的匿名請求會全部
+   * 掛在同一個 in-flight fetch 上（serverless 按時間計費，那是放大器）。
+   */
   function kickBackgroundRefresh() {
-    if (inFlight) return inFlight;
-    if (Date.now() - lastMissFetchAt < missCooldownMs) return null;
+    if (inFlight) return { promise: inFlight, started: false };
+    if (Date.now() - lastMissFetchAt < missCooldownMs) return { promise: null, started: false };
     // 先卡住，擋掉一波未知 kid 同時湧進來；結束時再蓋一次（見下）
     lastMissFetchAt = Date.now();
     // 冷卻用獨立的 lastMissFetchAt，不跟定時刷新共用 —— 共用的話，剛跑完的
     // 定時刷新會把冷卻洗掉，金鑰輪換要等整個 cooldown 才跟得上。
-    return refresh().finally(() => { lastMissFetchAt = Date.now(); });
+    const promise = refresh(true).finally(() => { lastMissFetchAt = Date.now(); });
+    return { promise, started: true };
   }
 
   /**
@@ -175,20 +233,25 @@ function createJwksCache(options = {}) {
   function getKey(kid) {
     if (typeof kid !== "string" || !kid) return null;
     const key = isStale() ? undefined : keysByKid.get(kid);
-    if (!key) kickBackgroundRefresh();
+    if (!key) {
+      lastMissKid = kid;
+      kickBackgroundRefresh();
+    }
     return key || null;
   }
 
   /**
-   * 非同步取公鑰：miss 時**等**一次有上限的抓取再回答。
-   * 這樣重啟後第一個請求就能成功，代價是該請求多等一次 JWKS 往返（有逾時）。
+   * 非同步取公鑰：**這次 miss 真的發動了抓取**時才等它，然後再答。
+   * 這樣重啟後第一個請求就能成功，而後續的未知 kid 不會集體排隊。
+   * 最壞情況約 2×timeoutMs（fetch 與 res.json() 各有一層逾時）。
    */
   async function getKeyAsync(kid) {
     if (typeof kid !== "string" || !kid) return null;
     const cached = isStale() ? undefined : keysByKid.get(kid);
     if (cached) return cached;
-    const pending = kickBackgroundRefresh();
-    if (pending) await pending;
+    lastMissKid = kid;
+    const { promise, started } = kickBackgroundRefresh();
+    if (started && promise) await promise;
     return (isStale() ? undefined : keysByKid.get(kid)) || null;
   }
 
@@ -197,6 +260,10 @@ function createJwksCache(options = {}) {
     return {
       url,
       keys: keysByKid.size,
+      // kid 是公開資訊。放進來是因為最常見的事故形狀是「輪換後 token 的 kid
+      // 不在快取裡」,而單一個數字分不出它跟健康快取的差別。
+      kids: [...keysByKid.keys()],
+      lastMissKid,
       stale: isStale(),
       lastSuccessAt: lastSuccessAt || null,
       lastAttemptAt: lastAttemptAt || null,
@@ -213,9 +280,9 @@ function createJwksCache(options = {}) {
 
   /** 開機：抓一次並回傳該 promise（宿主該 await 它），之後定時刷新。 */
   function start() {
-    const first = refresh();
+    const first = refresh(true);
     if (refreshMs > 0 && !timer) {
-      timer = setInterval(refresh, refreshMs);
+      timer = setInterval(() => refresh(true), refreshMs);
       if (typeof timer.unref === "function") timer.unref(); // 不卡住 process 結束
     }
     return first;
