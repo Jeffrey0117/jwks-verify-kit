@@ -101,7 +101,26 @@ export interface JwksCacheOptions {
   now?: () => number;
 }
 
+/** `onReject` 收到的資訊。`reason` 是穩定的 kebab-case 識別字串，可當 metric label。 */
+export interface RejectInfo {
+  readonly reason: string;
+  /** 其餘欄位依 reason 而異（alg / kid / claim / exp / actual …）。 */
+  readonly [key: string]: unknown;
+}
+
 export interface VerifyClaimOptions {
+  /**
+   * 每個拒絕點都會呼叫一次，然後驗證仍然回 null。沒給就完全不收集。
+   *
+   * 為什麼要有：一個只會回 null 的驗證器在出事時查不動 ——「使用者說他登不進
+   * 去」而伺服器只知道 401，到底是 token 過期、kid 還沒輪換進快取、還是 app
+   * claim 不符？
+   *
+   * ⚠️ 回呼丟錯會被吞掉（日誌壞掉不該變成認證通過）。而 info 裡的值多半是
+   * **呼叫端送來的**（alg / kid / claim 的實際值）：寫進自己的 log 沒問題，
+   * 但不要原樣回給呼叫端 —— 那是反射式資訊外洩。
+   */
+  onReject?: (info: RejectInfo) => void;
   /** 要求 `iss` 等於這個值。 */
   issuer?: string;
   /**

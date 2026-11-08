@@ -23,6 +23,8 @@ const lmu: JwksVerifier = createLetMeUseVerifier({
   baseUrl: process.env.LETMEUSE_BASE_URL,
   timeoutMs: Number(process.env.JWKS_TIMEOUT_MS) || 5000,
   onError: (err: Error) => console.warn(err.message),
+  // 逐顆 token 的拒絕原因（只進自己的 log，不回給呼叫端）
+  onReject: (info) => console.warn(`[auth] 401 ${info.reason}`),
 });
 
 // 同步路徑（pokkit / quickky / plottr / speakslow-stats / wemeet）

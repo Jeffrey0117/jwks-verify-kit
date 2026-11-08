@@ -28,7 +28,7 @@
 | 簽章段的非正規化寫法 | 同一顆 token 有 16 種寫法 → 撤銷黑名單／重放快取失效 |
 | 未知 kid 的冷卻跟定時刷新共用 | 金鑰輪換跟不上 |
 | 同步快取沒預熱 | 重啟後第一個請求必 401 |
-| fail-closed 沒有可觀測性 | IdP 掛掉時查三小時查不到 |
+| fail-closed 沒有可觀測性 | IdP 掛掉時查三小時查不到；逐顆 token 只有 401，分不出是過期、kid 還沒輪換進快取、還是租戶 claim 不符 |
 
 每個專案自己寫一份 = 每個專案各自踩一半。這個 kit 就是那一份，而且每一條都有測試（`node --test`，**80 個**；六個 fail-open 另外用「還原修復確認變紅」驗證過）。
 
@@ -50,6 +50,30 @@ return c.sub                             // ^ 報錯：c 可能是 null
 ```
 
 `test/types/must-fail.ts` 用 `@ts-expect-error` 把這些寫法釘成「必須報錯」，所以型別沒鬆掉這件事本身也有測試。
+
+## 為什麼 401 要有理由
+
+驗證失敗回 `null` 很乾淨，但出事的時候查不動：使用者說「我登不進去」，而伺服器
+只知道 401 —— 到底是 token 過期、kid 還沒輪換進快取、還是 `app` claim 不符？
+
+```js
+const auth = createLetMeUseVerifier({
+  appId: process.env.LETMEUSE_APP_ID,
+  baseUrl: process.env.LETMEUSE_BASE_URL,
+  onReject: (info) => console.warn(`[auth] 401 ${info.reason}`, info),
+});
+```
+
+`reason` 是穩定的 kebab-case 字串，可以直接 grep 或當 metric 的 label：
+`expired`、`key-not-found`、`required-claim-mismatch`、`sig-invalid`、
+`exp-missing-or-not-number`、`alg-not-allowed`、`kid-missing`、`not-yet-valid`、
+`sub-not-string`、`allowed-claim-not-in-list`、`getkey-not-function`…
+（完整清單有測試釘住：改名字會讓依賴它做 alert 的宿主靜默失效。）
+
+兩條守則：
+- **回呼丟錯會被吞掉。** 日誌壞掉不該變成認證通過，也不該變成 500。
+- **`info` 裡的值多半是呼叫端送來的**（`alg` / `kid` / claim 的實際值）。寫進
+  自己的 log 沒問題，**不要原樣回給呼叫端** —— 那是反射式資訊外洩。
 
 ## 用法
 

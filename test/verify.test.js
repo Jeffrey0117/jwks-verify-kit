@@ -290,3 +290,78 @@ test("🔒 陣列成員比對只適用 aud —— 租戶 claim 必須嚴格相�
   const weirdAud = signToken({ sub: "u1", aud: ["my-api", { x: 1 }], exp: future() }, { key: privateKey });
   assert.equal(verifyJwt(weirdAud, { getKey, requiredClaims: { aud: "my-api" } }), null);
 });
+
+// ── onReject：逐顆 token 的可觀測性（2026-11-08 加）──────────────────────────
+
+test("🔎 每個拒絕點都回報一個原因 —— 沒有靜默的 return null", () => {
+  // 一個只會回 null 的驗證器在出事時查不動：「使用者說他登不進去」而伺服器只
+  // 知道 401。這個測試把「每條拒絕路徑都有名字」釘住,順便當成 reason 清單的
+  // 回歸測試（改名字會讓依賴它做 alert 的宿主靜默失效）。
+  const cases = {
+    "token-not-string": [null, base],
+    "not-three-segments": ["a.b", base],
+    "segment-not-base64url": ["a!b.c.d", base],
+    "header-not-json": [`${Buffer.from("nope").toString("base64url")}.e30.${"A".repeat(86)}`, base],
+    "alg-not-allowed": [signHs256({ sub: "u1", app: APP, exp: future() }, "s"), base],
+    "algorithms-option-invalid": [valid(), { ...base, algorithms: "ES256" }],
+    "kid-missing": [signToken({ sub: "u1", app: APP, exp: future() }, { key: privateKey, header: { kid: undefined } }), base],
+    "crit-unsupported": [signToken({ sub: "u1", app: APP, exp: future() }, { key: privateKey, header: { crit: ["x"] } }), base],
+    "sig-length": [signToken({ sub: "u1", app: APP, exp: future() }, { key: privateKey, der: true }), base],
+    "key-not-found": [signToken({ sub: "u1", app: APP, exp: future() }, { key: privateKey, header: { kid: "other-kid" } }), base],
+    "getkey-not-function": [valid(), { requiredClaims: { app: APP } }],
+    "getkey-threw": [valid(), { ...base, getKey: () => { throw new Error("boom"); } }],
+    "exp-missing-or-not-number": [signToken({ sub: "u1", app: APP }, { key: privateKey }), base],
+    expired: [valid({ exp: past() }), base],
+    "nbf-not-number": [valid({ nbf: "soon" }), base],
+    "not-yet-valid": [valid({ nbf: future() }), base],
+    "issuer-option-empty": [valid(), { ...base, issuer: "" }],
+    "issuer-mismatch": [valid(), { ...base, issuer: "https://idp.example" }],
+    "required-claims-option-not-object": [valid(), { getKey, requiredClaims: '{"app":"x"}' }],
+    "required-claim-option-empty": [valid(), { getKey, requiredClaims: { app: undefined } }],
+    "required-claim-mismatch": [valid({ app: "app_other" }), base],
+    "sub-not-string": [signToken({ sub: 42, app: APP, exp: future() }, { key: privateKey }), base],
+    "allowed-claims-option-not-object": [valid(), { ...base, allowedClaims: "nope" }],
+    "allowed-claim-list-empty": [valid(), { ...base, allowedClaims: { app: [] } }],
+    "allowed-claim-not-in-list": [valid(), { ...base, allowedClaims: { app: ["app_someone_else"] } }],
+  };
+
+  for (const [expected, [token, opts]] of Object.entries(cases)) {
+    const seen = [];
+    const result = verifyJwt(token, { ...opts, onReject: (info) => seen.push(info) });
+    assert.equal(result, null, `${expected}: 應該被拒絕`);
+    assert.ok(seen.length >= 1, `${expected}: 沒有回報任何原因`);
+    assert.equal(seen[0].reason, expected, `${expected}: 回報的是 ${seen[0].reason}`);
+  }
+});
+
+test("🔎 通過的 token 不呼叫 onReject", () => {
+  const seen = [];
+  assert.ok(verifyJwt(valid(), { ...base, onReject: (i) => seen.push(i) }));
+  assert.equal(seen.length, 0);
+});
+
+test("🔒 onReject 自己丟錯不能影響驗證結果（日誌壞掉 ≠ 放行）", () => {
+  const boom = () => { throw new Error("logger exploded"); };
+  // 失敗的仍然回 null,不是冒出例外
+  assert.equal(verifyJwt(valid({ exp: past() }), { ...base, onReject: boom }), null);
+  // 成功的仍然回 claims（onReject 根本不會被叫到,但確認沒改到成功路徑）
+  assert.ok(verifyJwt(valid(), { ...base, onReject: boom }));
+});
+
+test("🔎 sig-invalid：簽章不對時回報,而且帶 kid", () => {
+  const attacker = keypair();
+  const forged = signToken({ sub: "u1", app: APP, exp: future() }, { key: attacker.privateKey });
+  const seen = [];
+  assert.equal(verifyJwt(forged, { ...base, onReject: (i) => seen.push(i) }), null);
+  assert.equal(seen[0].reason, "sig-invalid");
+  assert.equal(seen[0].kid, "test-kid");
+});
+
+test("🔎 async 版同樣回報原因", async () => {
+  const seen = [];
+  const r = await verifyJwtAsync(valid({ exp: past() }), {
+    ...base, getKey: async (kid) => getKey(kid), onReject: (i) => seen.push(i),
+  });
+  assert.equal(r, null);
+  assert.equal(seen[0].reason, "expired");
+});

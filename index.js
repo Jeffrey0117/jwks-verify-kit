@@ -125,6 +125,11 @@ function createJwksVerifier(options = {}) {
     allowedClaims: freezeCopy(plainObjectOrNull("allowedClaims", options.allowedClaims)),
     requireSubject: options.requireSubject !== false, // 預設要求非空字串 sub
     clockToleranceSec: num("clockToleranceSec", options.clockToleranceSec, 0),
+    // 逐顆 token 的拒絕原因。沒給就完全不收集（零成本）。
+    // 一個只會回 null 的驗證器在出事時查不動 ——「使用者說他登不進去」而伺服器
+    // 只知道 401，到底是過期、kid 還沒輪換進快取、還是 app claim 不符？
+    // ⚠️ info 裡的值多半是呼叫端送來的，寫自己的 log 沒問題，**別回給呼叫端**。
+    onReject: typeof options.onReject === "function" ? options.onReject : undefined,
   });
 
   let started = null;
