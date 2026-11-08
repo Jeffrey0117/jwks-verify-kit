@@ -68,6 +68,21 @@ env 只要兩個：`LETMEUSE_APP_ID`、`LETMEUSE_BASE_URL`（或 `LETMEUSE_JWKS_
 9. 開機有預熱嗎？（沒有 = 重啟後第一個請求必 401）
 10. fail-closed 的狀態看得見嗎？（`stats()` 上健檢；`onError` 不要是 noop）
 11. 數字設定有驗證嗎？（`Number(process.env.X)` 沒設時是 `NaN`，會靜默關掉保護）
+12. **它真的在驗簽嗎？** 聽起來蠢，但 2026-11-08 盤點時 makee 的 `decodeJwt` 只 base64 解 payload，註解寫「內部信任不需驗簽」—— 而那個 token 來自瀏覽器 cookie。看到「內部信任」四個字要去追「這個值從哪個**輸入**來的」，不要當成答案。
+13. **非同步的驗證有 `await` 嗎？** `const claims = auth.verifyAsync(t); if (!claims) return 401` 會拿到 truthy 的 Promise → 放行全部。（這就是本 kit 不提供叫 `verify` 的方法的原因。）
+14. **`exp` 用 jose 驗的話有寫 `requiredClaims: ['exp']` 嗎？** jose 的 `jwtVerify` **預設不要求 exp 存在** —— 看起來最正規的寫法反而最容易漏，因為「我用了標準函式庫」會讓人不去查預設值。而這種「缺少某樣東西」的問題 regex 稽核抓不到。
+15. **走同步 `getKey` 的服務，開機預熱有 `await` 嗎？** 同步路徑永遠不等 —— 第一次抓取完成前每個請求都 401。只有 `getKeyAsync` 會在冷啟動時等在飛的那次抓取。
+
+### 找消費端的方法（光 grep 實作指紋會漏）
+
+`grep -rl "ieee-p1363"` 只找得到「手寫 node crypto ES256」那一種。2026-11-08 用它漏掉兩個最嚴重的（cloudpipe 核心收 HS256、makee 完全不驗簽）。要 grep **意圖**：`LETMEUSE_APP_ID`、`letmeuse`、`decodeJwt`、`jwtVerify`，以及「只取 JWT 第二段」那種寫法。
+
+### 回套既有專案時
+
+- **不要刪消費端的既有測試去配合 kit。** 讓它們對著 kit 跑；跑不過**先懷疑 kit**。2026-11-08 回套九個專案，消費端的既有測試撈出 kit 五個真 bug（而 kit 自己 81 個測試全綠）。
+- **還原修復確認變紅**時，legacy shim 要忠實到「連環境前提都一樣」（stub 的 config 要帶上舊碼會讀的欄位），而且參數形狀要跟新版一致 —— 不然 RED 是假的，或者整組紅、分不出哪幾條真的抓到洞。
+- 查紅燈要看 **`# cancelled`**，不只 `# fail`：掛住的測試被算成 cancelled。
+- 線上探針的基準線要挑**需要登入的 GET**。用寫入端點會在線上留資料（我在 speakslow-stats 的 DB 留過一列）。
 
 ## 模式與文案
 
