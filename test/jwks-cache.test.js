@@ -321,14 +321,27 @@ test("stats() 帶 kids 與 lastMissKid（輪換事故靠數字看不出來）", 
 test("getKeyAsync 在冷卻期內不排隊等別人的抓取（serverless 計費放大）", async () => {
   // 500 個帶亂 kid 的匿名請求若全掛在同一個 in-flight fetch 上,等於每個請求
   // 都被計費等待。只有「真的發動抓取」的那次才該等。
+  //
+  // ⚠️ 2026-11-08 改寫:這條規則原本寫成「無條件」,於是把本 kit 明文要消滅的
+  // 失敗模式帶了回來 —— 冷啟動時 start() 已經在飛,第一個請求的查詢「不是我
+  // 發動的」就不等 → 回 null → 401(回套 upimg 時被它的測試抓到)。
+  // 現在的邊界是「**有沒有成功抓到過金鑰**」:
+  //   - 還沒成功過(冷啟動) → 等。反正不等也是 401,等了至少有機會成功,而且
+  //     這個窗口只有冷啟動的頭幾百毫秒。
+  //   - 已經有金鑰 → 不等,維持防放大(這個測試現在測的就是這一半)。
   let release;
   const gate = new Promise((r) => { release = r; });
+  let n = 0;
   const impl = async () => {
-    await gate;
+    n += 1;
+    if (n > 1) await gate; // 第一次正常回,之後卡住
     return { ok: true, status: 200, json: async () => JWKS };
   };
   const cache = createJwksCache(cacheOpts({ fetchImpl: impl, missCooldownMs: 60_000, timeoutMs: 0 }));
-  const first = cache.getKeyAsync("unknown-a"); // 這次發動抓取 → 會等
+  await cache.refresh();                  // 先讓快取有金鑰(= 不再是冷啟動)
+  assert.ok(cache.getKey("kid-1"));
+
+  const first = cache.getKeyAsync("unknown-a"); // 這次發動抓取 → 會等(卡在 gate)
   await new Promise((r) => setImmediate(r));
   const t0 = Date.now();
   const second = await cache.getKeyAsync("unknown-b"); // 冷卻中 → 不該等
@@ -337,6 +350,31 @@ test("getKeyAsync 在冷卻期內不排隊等別人的抓取（serverless 計費
   assert.ok(elapsed < 50, `第二個請求不該排隊,實際等了 ${elapsed}ms`);
   release();
   await first;
+  cache.stop();
+});
+
+test("🔒 權威的空 JWKS 之後不要再傻等（金鑰真的沒了,等完還是 null）", async () => {
+  // 跟上面那條冷啟動的例外要分清楚:邊界是「有沒有成功抓到過」而不是「快取是不
+  // 是空的」。金鑰被緊急下架時 size 也是 0,但那時候等待只是白付等待的錢。
+  let n = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const impl = async () => {
+    n += 1;
+    if (n > 1) await gate;
+    return { ok: true, status: 200, json: async () => ({ keys: [] }) }; // 權威的空
+  };
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl, missCooldownMs: 0, timeoutMs: 0 }));
+  await cache.refresh(); // 成功抓到「空的」→ lastSuccessAt 有值, keys = 0
+
+  const kick = cache.getKeyAsync("kid-1"); // 發動抓取(卡住)
+  await new Promise((r) => setImmediate(r));
+  const t0 = Date.now();
+  const second = await cache.getKeyAsync("kid-2");
+  assert.equal(second, null);
+  assert.ok(Date.now() - t0 < 50, "下架之後不該再排隊等");
+  release();
+  await kick;
   cache.stop();
 });
 
@@ -394,5 +432,55 @@ test("🕒 注入時鐘能驅動政策計時（冷卻/stale），抓取逾時不
   assert.equal(cache.stats().stale, false);
   clock += 11 * 60_000;
   assert.equal(cache.stats().stale, true, "超過 maxStaleMs 要標記 stale");
+  cache.stop();
+});
+
+test("🔒 冷啟動：快取還空著時,getKeyAsync 要等在飛的那次抓取（不能回 null）", async () => {
+  // 這是本 kit 明文要消滅的失敗模式:「重啟後第一個請求就算帶完全有效的 token
+  // 也會 401」。原本的「只有自己發動的抓取才等」把它帶了回來 —— 因為冷啟動時
+  // start() 已經在飛,於是同一個請求的查詢「不是我發動的」就不等。
+  //
+  // 回套 upimg（Next.js,沒有可靠的開機預熱點）時被它的測試抓到。
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const impl = async (url, init) => {
+    await gate; // 讓抓取卡住,製造「有 inFlight」的狀態
+    return { ok: true, status: 200, json: async () => JWKS };
+  };
+  impl.calls = [];
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl }));
+
+  void cache.start();            // 開始抓(卡在 gate)
+  const lookup = cache.getKeyAsync("kid-1"); // 同一個「請求」來查
+  release();                     // 抓取完成
+
+  assert.ok(await lookup, "冷啟動的第一個查詢必須等到金鑰,不能回 null");
+  cache.stop();
+});
+
+test("快取已經有金鑰時,未知 kid 不等在飛的抓取（防放大效果,維持原行為）", async () => {
+  // 另一個方向也要釘住:已經有金鑰的情況下,500 個帶亂 kid 的匿名請求不該全部
+  // 掛在同一個 fetch 上（serverless 按時間計費,那是放大器）。
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let n = 0;
+  const impl = async () => {
+    n += 1;
+    if (n > 1) await gate;
+    return { ok: true, status: 200, json: async () => JWKS };
+  };
+  const cache = createJwksCache(cacheOpts({ fetchImpl: impl, missCooldownMs: 0 }));
+  await cache.refresh();
+  assert.ok(cache.getKey("kid-1"), "先有金鑰");
+
+  // ⚠️ 第一個查詢**不能 await** —— 它自己發動了那個被 gate 卡住的抓取,await 它
+  // 就是跟自己死鎖(我第一版就這樣寫,整個測試檔 5 個測試一起 cancelled)。
+  const first = cache.getKeyAsync("kid-unknown-1");
+  const started = Date.now();
+  const second = await cache.getKeyAsync("kid-unknown-2"); // 不該等別人的抓取
+  assert.equal(second, null);
+  assert.ok(Date.now() - started < 3000, "不該掛在那個卡住的抓取上");
+  release();
+  await first;
   cache.stop();
 });

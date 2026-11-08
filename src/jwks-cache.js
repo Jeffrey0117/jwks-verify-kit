@@ -285,6 +285,34 @@ function createJwksCache(options = {}) {
     const cached = isStale() ? undefined : keysByKid.get(kid);
     if (cached) return cached;
     lastMissKid = kid;
+
+    // 🔒 冷啟動：快取**從來沒有成功抓到過**金鑰時，一定要等在飛的那次抓取。
+    //
+    // 2026-11-08 修。原本的規則是「只有這次 miss 自己發動了抓取才等」，用意是
+    // 擋放大效果（500 個帶亂 kid 的匿名請求不該全掛在同一個 fetch 上）。但那條
+    // 規則在冷啟動時剛好製造它要避免的災難：
+    //   process 起來 → 第一個請求觸發建快取 → start() 開始抓 → **同一個請求**的
+    //   查詢看到「有 inFlight 但不是我發動的」→ 不等 → 回 null → 401。
+    // 於是「重啟後第一個請求就算帶完全有效的 token 也會 401」這個本 kit 明文要
+    // 消滅的失敗模式，被這條最佳化原封不動帶了回來（回套 upimg 時被它的測試抓到
+    // —— Next.js 沒有可靠的開機預熱點，每個冷啟動都會踩）。
+    //
+    // 分界是「快取是不是空的」而不是「誰發動的」：
+    //   - 完全沒有金鑰 → 等。反正沒等也是 401，等了至少有機會成功，而且這種狀態
+    //     只存在於冷啟動的頭幾百毫秒。
+    //   - 已經有金鑰但 kid 不認識 → 不等（維持原本的防放大），背景補抓。
+    // 邊界用「從來沒有成功抓取過」而不是「快取是空的」：權威的空 JWKS
+    // （金鑰被緊急下架）也會讓 size 變 0，那種狀態下等待毫無意義 —— 金鑰真的
+    // 沒了，等完還是 null，只是白白付等待的錢。
+    if (lastSuccessAt === 0 && inFlight) {
+      try {
+        await inFlight;
+      } catch (e) {
+        /* doRefresh 自己 catch 了；這裡只是等它結束 */
+      }
+      return (isStale() ? undefined : keysByKid.get(kid)) || null;
+    }
+
     const { promise, started } = kickBackgroundRefresh();
     if (started && promise) await promise;
     return (isStale() ? undefined : keysByKid.get(kid)) || null;
