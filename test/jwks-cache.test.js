@@ -24,16 +24,40 @@ test("抓到金鑰後 getKey 同步取得", async () => {
   assert.equal(cache.stats().lastError, null);
 });
 
-test("🔒 沒設 url → fail-closed,且錯誤看得見", async () => {
+test("🔒 沒設 url → **建構時就 throw**（不是靜默變成拒絕所有人）", () => {
+  // 2026-11-08 改：原本空網址是「每次 refresh 記一筆 lastError」。那太安靜 ——
+  // 服務照樣回 200、健檢全綠、沒有人登入得進來（areyoubot 就這樣跑了三個月）。
+  // 現在設定不全在建構時就壞掉。
+  assert.throws(() => createJwksCache(cacheOpts({ url: "" })), /JWKS 網址必填/);
+  assert.throws(() => createJwksCache(cacheOpts({ url: undefined })), /JWKS 網址必填/);
+  assert.throws(() => createJwksCache(cacheOpts({ url: "not a url" })), /網址無效/);
+});
+
+test("🔒 低階的 createJwksCache 也擋明文 http（規則不能只住在高階版）", () => {
+  // 生態系九個消費端為了自己管快取全都走低階版 —— 規則住在 createJwksVerifier
+  // 等於九個都沒有規則。`LETMEUSE_JWKS_URL=http://...` 一個 env 打錯就讓信任根
+  // 變明文：同網段任何人回自己的 JWKS,就能替任何使用者簽 token,而且零錯誤訊息。
+  assert.throws(() => createJwksCache(cacheOpts({ url: "http://idp.test/jwks" })), /必須走 https/);
+  assert.throws(() => createJwksCache(cacheOpts({ url: "file:///C:/Windows/win.ini" })), /必須走 https/);
+  // localhost 的明文合法（同機直連不經網路,生態系常態）
+  createJwksCache(cacheOpts({ url: "http://localhost:4006/api/jwks" })).stop();
+  createJwksCache(cacheOpts({ url: "http://127.0.0.1:4006/api/jwks" })).stop();
+  // 真的要對外明文得明確表態
+  createJwksCache(cacheOpts({ url: "http://idp.test/jwks", allowInsecureHttp: true })).stop();
+});
+
+test("🔒 抓取失敗要 fail-closed,而且錯誤看得見", async () => {
   const errors = [];
-  const cache = createJwksCache(cacheOpts({ url: "", onError: (e) => errors.push(e) }));
+  const cache = createJwksCache(cacheOpts({
+    fetchImpl: fakeFetch(new Error("ECONNREFUSED")),
+    onError: (e) => errors.push(e),
+  }));
   await cache.refresh();
   assert.equal(errors.length, 1, "抓取失敗要回報一次");
-  // getKey 的 miss 會再觸發一次背景重抓（那也會失敗並回報）—— 這是對的,
-  // 重點是它回 null 而不是放行
-  assert.equal(cache.getKey("kid-1"), null);
+  assert.equal(cache.getKey("kid-1"), null, "回 null 而不是放行");
   await cache.whenIdle();
-  assert.match(cache.stats().lastError, /JWKS 網址/);
+  assert.match(cache.stats().lastError, /ECONNREFUSED/);
+  cache.stop();
 });
 
 test("🔒 格式正確的空 JWKS 要清空快取（否則緊急撤銷永遠不生效）", async () => {
@@ -180,11 +204,12 @@ test("getKey / getKeyAsync 對壞 kid 不 throw", async () => {
 
 test("onError 自己壞掉不該炸快取", async () => {
   const cache = createJwksCache(cacheOpts({
-    url: "",
+    fetchImpl: fakeFetch(new Error("boom")),
     onError: () => { throw new Error("reporter is broken"); },
   }));
   await cache.refresh(); // 不該 reject
   assert.ok(cache.stats().lastError);
+  cache.stop();
 });
 
 test("start() 回第一次抓取的 promise,stop() 收掉定時器", async () => {

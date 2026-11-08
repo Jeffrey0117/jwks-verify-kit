@@ -205,6 +205,14 @@ export interface LetMeUseVerifierOptions extends JwksVerifierOptions {
  */
 export function createLetMeUseVerifier(options?: LetMeUseVerifierOptions): JwksVerifier;
 
+/**
+ * 低階快取。**網址會被檢查**：空值 / 無效 / 非 https（localhost 除外，或明確傳
+ * `allowInsecureHttp`）一律在建構時 throw。
+ *
+ * 2026-11-08 把這條規則從 `createJwksVerifier` 下移到這裡：生態系九個消費端為了
+ * 自己管快取全都走低階版，規則住在高階版等於九個都沒有規則。一個
+ * `LETMEUSE_JWKS_URL=http://...` 的 env 錯誤就讓信任根變明文。
+ */
 export function createJwksCache(options: JwksCacheOptions & { url: string }): JwksCache;
 
 export interface VerifyJwtOptions extends VerifyClaimOptions {

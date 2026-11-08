@@ -186,11 +186,18 @@ test("allowedClaims：多租戶（selfize 那種一個服務服務多個 app）"
 });
 
 test("stats() 曝露 fail-closed 的原因（別讓它變無聲故障）", async () => {
-  const v = createJwksVerifier(opts({ jwksUrl: undefined, baseUrl: undefined }));
+  // 網址「有但抓不到」→ fail-closed 且原因看得見。
+  const v = createJwksVerifier(opts({ fetchImpl: fakeFetch(new Error("ECONNREFUSED")) }));
   const s = await v.ready();
   assert.equal(s.keys, 0);
-  assert.ok(s.lastError);
+  assert.match(s.lastError, /ECONNREFUSED/);
   v.stop();
+});
+
+test("🔒 完全沒給網址 → 建構時就 throw（比「安靜地拒絕所有人」好）", () => {
+  // 2026-11-08 改：原本回一個 keys=0 的 verifier,服務於是照樣回 200、健檢全綠、
+  // 但沒有人登入得進來 —— areyoubot 就這樣跑了三個月。
+  assert.throws(() => createJwksVerifier(opts({ jwksUrl: undefined, baseUrl: undefined })), /JWKS 網址必填/);
 });
 
 test("bearer() 掛在 verifier 上,方便一行取 token", () => {

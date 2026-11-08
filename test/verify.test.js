@@ -365,3 +365,36 @@ test("🔎 async 版同樣回報原因", async () => {
   assert.equal(r, null);
   assert.equal(seen[0].reason, "expired");
 });
+
+test("🔒 巢狀的 own __proto__ key 也要拒絕（不只頂層）", () => {
+  // security review 抓到的：原本只檢查頂層，所以
+  // `{"sub":"u","profile":{"__proto__":{"isAdmin":true}}}` 會過。要簽得出這種
+  // token 得有 IdP 的私鑰，但宿主對巢狀物件做 `Object.assign(target, claims.profile)`
+  // 是很自然的寫法 —— 那一下就污染 target 的原型。
+  const nested = signRawPayload(
+    `{"sub":"u1","app":"${APP}","exp":${future()},"profile":{"__proto__":{"isAdmin":true}}}`,
+    { key: privateKey },
+  );
+  assert.equal(verifyJwt(nested, base), null);
+
+  // 陣列裡面藏的也要擋
+  const inArray = signRawPayload(
+    `{"sub":"u1","app":"${APP}","exp":${future()},"items":[{"__proto__":{"x":1}}]}`,
+    { key: privateKey },
+  );
+  assert.equal(verifyJwt(inArray, base), null);
+
+  // 正常的巢狀 claim 不該被誤擋
+  const ok = signRawPayload(
+    `{"sub":"u1","app":"${APP}","exp":${future()},"profile":{"tier":"pro","tags":["a","b"]}}`,
+    { key: privateKey },
+  );
+  assert.ok(verifyJwt(ok, base));
+});
+
+test("🔒 深層巢狀的 JSON 不能變成 CPU 攻擊面（超過上限就拒絕）", () => {
+  let deep = '{"deep":1}';
+  for (let i = 0; i < 40; i += 1) deep = `{"a":${deep}}`;
+  const token = signRawPayload(`{"sub":"u1","app":"${APP}","exp":${future()},"x":${deep}}`, { key: privateKey });
+  assert.equal(verifyJwt(token, base), null, "超過深度上限要拒絕,不是放行");
+});

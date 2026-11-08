@@ -20,6 +20,7 @@ const { createJwksCache } = require("./src/jwks-cache");
 const { verifyJwt, verifyJwtAsync, bearerToken } = require("./src/verify");
 const { SUPPORTED_ALGS, DEFAULT_ALGS } = require("./src/algorithms");
 const { num, plainObjectOrNull, freezeCopy } = require("./src/options");
+const { assertSafeJwksUrl } = require("./src/url");
 
 /**
  * 拼出並檢查 JWKS 網址。刻意不內建任何主機 —— 位址一律由宿主注入。
@@ -43,21 +44,9 @@ function resolveUrl(options) {
     throw new Error(`jwks-verify-kit: jwksUrl 必須是字串（收到 ${typeof options.jwksUrl}）`);
   }
 
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch (e) {
-    throw new Error(`jwks-verify-kit: JWKS 網址無效：${JSON.stringify(raw)}`);
-  }
-  const localhost = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname);
-  const insecureOk = options.allowInsecureHttp === true || (parsed.protocol === "http:" && localhost);
-  if (parsed.protocol !== "https:" && !insecureOk) {
-    throw new Error(
-      `jwks-verify-kit: JWKS 必須走 https（收到 ${parsed.protocol}//${parsed.hostname}）。`
-      + "這個回應就是信任根 —— 明文等於任何中間人都能換掉公鑰、替任何使用者簽 token。"
-      + "真的要明文請明確傳 allowInsecureHttp: true。",
-    );
-  }
+  // 規則住在 src/url.js（低階的 createJwksCache 也要用同一條，否則走低階版的
+  // 消費端就繞過了 https 強制 —— 2026-11-08 security review 抓到的）。
+  assertSafeJwksUrl(raw, options);
   return raw;
 }
 
@@ -107,6 +96,10 @@ function createJwksVerifier(options = {}) {
   const cache = createJwksCache({
     url,
     algorithms,
+    // 必須轉傳：https 強制現在住在 createJwksCache 裡，不轉傳的話「明確表態要用
+    // 明文」這條路會在低一層被擋掉（2026-11-08 把規則下移時漏掉的，被 kit 自己
+    // 的測試抓到）。
+    allowInsecureHttp: options.allowInsecureHttp,
     fetchImpl: options.fetchImpl,
     refreshMs: num("refreshMs", options.refreshMs, undefined),
     missCooldownMs: num("missCooldownMs", options.missCooldownMs, undefined),

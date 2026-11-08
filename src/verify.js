@@ -70,13 +70,46 @@ function rejecter(options) {
  * pollution（常見漏洞類別）＋一顆沒有 exp / 沒有 app 的合法簽章 token
  * ＝ 永不過期、任何租戶都通。
  */
+// 遞迴掃描的上限。claims 是 IdP 發的小物件；設上限只是為了讓「惡意的深層巢狀
+// JSON」不能把這個檢查變成 CPU 攻擊面。超過上限就**拒絕**（不是放行）。
+const MAX_SCAN_DEPTH = 6;
+const MAX_SCAN_NODES = 512;
+
+/**
+ * 整棵 claims 樹裡不准有 own `__proto__` / `constructor` / `prototype` key。
+ *
+ * ⚠️ 2026-11-08：原本只檢查**頂層**。security review 指出
+ * `{"sub":"u","profile":{"__proto__":{"isAdmin":true}}}` 會過 —— 雖然那需要 IdP
+ * 的私鑰才簽得出來，但宿主對巢狀物件做 `Object.assign(target, claims.profile)`
+ * 是很自然的寫法，而那一下就污染 target 的原型。這個 kit 的立場是「claim 的形狀
+ * 可疑就拒絕」，所以整棵都檢查。
+ *
+ * @returns {boolean} true = 乾淨
+ */
+function treeIsClean(value, depth = 0, counter = { n: 0 }) {
+  if (value === null || typeof value !== "object") return true;
+  counter.n += 1;
+  if (depth > MAX_SCAN_DEPTH || counter.n > MAX_SCAN_NODES) return false;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (!treeIsClean(item, depth + 1, counter)) return false;
+    }
+    return true;
+  }
+  for (const bad of FORBIDDEN_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(value, bad)) return false;
+  }
+  for (const key of Object.keys(value)) {
+    if (!treeIsClean(value[key], depth + 1, counter)) return false;
+  }
+  return true;
+}
+
 function decodeJson(segment) {
   try {
     const parsed = JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    for (const bad of FORBIDDEN_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(parsed, bad)) return null;
-    }
+    if (!treeIsClean(parsed)) return null;
     return Object.assign(Object.create(null), parsed);
   } catch {
     return null;

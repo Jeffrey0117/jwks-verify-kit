@@ -22,7 +22,7 @@
 | 空的 JWKS 不覆蓋舊快取 | 緊急撤銷金鑰永遠不生效 |
 | node 的 `fetch` 沒有預設逾時 | 對方不回應 → 快取永久凍結、全部 401 且零診斷 |
 | 設定值是 `NaN`（`Number(process.env.X)` 而 env 沒設） | 靜默關掉對應的保護 |
-| JWKS 走 `http://` | 同網段任何人換掉公鑰 = 完整認證繞過 |
+| JWKS 走 `http://` | 同網段任何人換掉公鑰 = 完整認證繞過（這條住在**最底層** `createJwksCache`：規則只放在高階版的話，自己管快取的消費端就全部繞過了） |
 | 缺少的 claim 從 `Object.prototype` 解析到值 | prototype pollution ＋ 無 exp token = 永久通行證 |
 | payload 帶 own `__proto__` key | 宿主 `Object.assign(session, claims)` → 原型污染 |
 | 簽章段的非正規化寫法 | 同一顆 token 有 16 種寫法 → 撤銷黑名單／重放快取失效 |

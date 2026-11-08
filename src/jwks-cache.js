@@ -10,6 +10,7 @@
 
 const crypto = require("node:crypto");
 const { CRV_TO_ALG } = require("./algorithms");
+const { assertSafeJwksUrl } = require("./url");
 
 const DEFAULT_REFRESH_MS = 60 * 60 * 1000; // JWKS 通常回 max-age=3600
 const DEFAULT_MISS_COOLDOWN_MS = 60 * 1000; // kid 沒中（可能剛輪換）→ 最快 60 秒重抓
@@ -95,11 +96,15 @@ function withTimeout(promise, ms) {
  *   timeoutMs?: number,              // 0 = 不加逾時（只應在測試裡關掉）
  *   maxStaleMs?: number,             // 0 = 不做 stale fail-closed
  *   maxKeys?: number,
+ *   allowInsecureHttp?: boolean,   // 明確允許明文 http（信任根可被替換，慎用）
  *   onError?: (err: Error) => void,  // 預設 console.error
  * }} options
  */
 function createJwksCache(options = {}) {
-  const url = options.url || "";
+  // 🔒 網址的安全檢查在**這裡**，不是在 index.js。低階積木也必須擋明文 http ——
+  // 九個消費端為了自己管快取全都走這條路，規則住在高階版等於沒有規則。
+  // 測試用的假 IdP 都在 127.0.0.1，localhost 本來就是例外，所以不會被打到。
+  const url = assertSafeJwksUrl(options.url, options);
   const algorithms = options.algorithms;
   const fetchImpl = options.fetchImpl || ((...args) => globalThis.fetch(...args));
   const refreshMs = options.refreshMs != null ? options.refreshMs : DEFAULT_REFRESH_MS;
