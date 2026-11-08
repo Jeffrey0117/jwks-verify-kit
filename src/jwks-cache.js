@@ -17,10 +17,18 @@ const DEFAULT_TIMEOUT_MS = 5000;
 // 連續抓不到這麼久之後，寧可全部拒絕也不要拿「不知道多舊」的公鑰繼續放行。
 // 給得寬鬆（一天）：IdP 短暫停機不該讓所有人當場失效。
 const DEFAULT_MAX_STALE_MS = 24 * 60 * 60 * 1000;
-// 手動 refresh() 的最小間隔。沒有這道閘，宿主把 refresh 掛到管理端點上就等於
-// 開放一個對 IdP 的放大器（生態系有前例：連續打 refresh 把上游打到鎖定，
-// 然後空清單覆蓋掉整個快取）。
-const DEFAULT_MIN_REFRESH_INTERVAL_MS = 3000;
+// 手動 refresh() 的最小間隔，**預設關閉（0）**。
+//
+// 原本預設 3000ms，而且節流到的時候靜默回一個已 resolve 的 promise。那讓
+// 「金鑰外洩 → 從 JWKS 下架 → 呼叫 refresh() 立刻生效」這條路變成無聲 no-op,
+// 也就是這個 kit 一開始就說要消滅的那種 fail-open。權衡過後選擇預設不節流：
+//   - 併發風暴已經由 in-flight 合流擋掉（N 個同時呼叫 = 一次抓取）
+//   - 連續呼叫必須 await 上一個，本身就被限制成一次一個來回
+//   - 真正的放大風險來自「宿主把 refresh 接到公開端點」，那是宿主該限流的事
+//     （ratelimit-kit），不該用一個會靜默吃掉緊急撤銷的預設值來代償
+// 要那道閘就自己設 minRefreshIntervalMs，而且記得看 refresh() 的回傳值 ——
+// 現在節流到會回 `{ throttled: true }`，不再假裝成功。
+const DEFAULT_MIN_REFRESH_INTERVAL_MS = 0;
 // JWKS 正常只有個位數把金鑰。上限存在的理由是 `createPublicKey` 不便宜：
 // 實測兩萬把會讓 event loop 阻塞 1.2 秒，而且每次刷新都重來一遍。
 const DEFAULT_MAX_KEYS = 50;
@@ -185,19 +193,37 @@ function createJwksCache(options = {}) {
   /**
    * 抓一次 JWKS。併發呼叫共用同一個 in-flight promise。
    * `force` 由內部的定時刷新/預熱使用，會跳過最小間隔節流。
+   *
+   * 回傳 `{ refreshed, throttled, coalesced, keys }` —— **不是只有 void**。
+   *
+   * ⚠️ 2026-11-08 修：節流原本預設 3000ms 且**靜默回一個已 resolve 的
+   * promise**，所以宿主 `await cache.refresh()` 之後以為抓過了，其實什麼都沒
+   * 發生。這在正常情況無傷，但它踩爛的正是這個 kit 存在的理由之一：
+   * 「LetMeUse 私鑰外洩 → 把金鑰從 JWKS 下架 → 呼叫 refresh() 立刻生效」。
+   * 那個路徑一旦靜默 no-op，被盜金鑰簽的 token 會繼續通行到有人重啟 process。
+   *
+   * 兩件事一起改：
+   *   1. **預設不節流**（`minRefreshIntervalMs` 預設 0）。併發已經靠 in-flight
+   *      合流擋住風暴了；連續呼叫必須 await 上一個，本身就是一次一回合。
+   *   2. 真的節流到的時候**告訴呼叫端**（`throttled: true`），不要再靜默。
+   * 要擋「把 refresh 接到公開端點」的放大效果，請自己設
+   * `minRefreshIntervalMs` 或在端點前面加限流（ratelimit-kit），並檢查回傳值。
+   *
+   * 這個 bug 之所以躲過 81 個測試：kit 自己的測試把節流全域設成 0，於是從來
+   * 沒有任何測試跑在預設值上 —— 預設值要有自己的測試。
    */
   function refresh(force = false) {
-    if (inFlight) return inFlight;
+    if (inFlight) return inFlight.then(() => ({ refreshed: true, throttled: false, coalesced: true, keys: keysByKid.size }));
     if (!force && minRefreshIntervalMs > 0 && lastAttemptAt > 0
       && Date.now() - lastAttemptAt < minRefreshIntervalMs) {
-      return Promise.resolve(); // 節流：擋掉宿主把 refresh 接到端點上的放大效果
+      return Promise.resolve({ refreshed: false, throttled: true, coalesced: false, keys: keysByKid.size });
     }
     inFlight = doRefresh().finally(() => {
       inFlight = null;
       // 冷卻從「結束」算起：慢速或逾時的抓取若從開始算，等於完全沒冷卻
       lastAttemptAt = Date.now();
     });
-    return inFlight;
+    return inFlight.then(() => ({ refreshed: true, throttled: false, coalesced: false, keys: keysByKid.size }));
   }
 
   function isStale() {

@@ -140,7 +140,7 @@ const claims = await auth.verifyAsync(token);   // 重啟後第一個請求也�
 | `clockToleranceSec` | `0` | exp/nbf 容許的時鐘誤差（秒） |
 | `refreshMs` | `3600000` | 定時刷新；`0` = 不定時 |
 | `missCooldownMs` | `60000` | 未知 kid 最快多久重抓一次 |
-| `minRefreshIntervalMs` | `3000` | 手動 `refresh()` 的節流（內部刷新不受限） |
+| `minRefreshIntervalMs` | `0`（不節流） | 手動 `refresh()` 的節流。**預設關閉**：預設會節流又靜默的話，「金鑰外洩→從 JWKS 下架→`refresh()` 立刻生效」這條路會被無聲吃掉。要這道閘就自己設，並看 `refresh()` 回傳的 `throttled` |
 | `timeoutMs` | `5000` | 抓 JWKS 的總預算（fetch 與 json 共用同一個期限） |
 | `maxStaleMs` | `86400000` | 連續抓不到這麼久就當作沒金鑰 |
 | `maxKeys` | `50` | JWKS 金鑰數上限（`createPublicKey` 不便宜，兩萬把會阻塞 event loop 一秒多） |

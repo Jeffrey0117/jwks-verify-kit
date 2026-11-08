@@ -26,6 +26,17 @@ export type Claims = Record<string, unknown> & {
 
 export type SupportedAlg = "ES256" | "ES384" | "ES512";
 
+export interface RefreshResult {
+  /** 這次呼叫是否真的發出（或合流到）一次抓取。 */
+  readonly refreshed: boolean;
+  /** 被 minRefreshIntervalMs 節流掉了（預設 0，所以預設永遠是 false）。 */
+  readonly throttled: boolean;
+  /** 合流到已經在飛的那次抓取。 */
+  readonly coalesced: boolean;
+  /** 抓完後快取裡的金鑰數。**0 = 每一顆 token 都會被拒絕。** */
+  readonly keys: number;
+}
+
 export interface JwksStats {
   /** 實際在抓的 JWKS 網址。 */
   readonly url: string;
@@ -60,7 +71,11 @@ export interface JwksCacheOptions {
   refreshMs?: number;
   /** 未知 kid 觸發重抓的冷卻（ms），從抓取**結束**算起。 */
   missCooldownMs?: number;
-  /** 手動 refresh() 的節流（ms）。 */
+  /**
+   * 手動 refresh() 的節流（ms）。**預設 0（不節流）**：預設會節流又靜默的話，
+   * 緊急撤銷金鑰那條路會被無聲吃掉。要這道閘就自己設，並檢查 refresh() 回傳的
+   * `throttled`。
+   */
   minRefreshIntervalMs?: number;
   /** 單次抓取逾時（ms）。node 的 fetch 沒有預設逾時，所以這個一定要有。 */
   timeoutMs?: number;
@@ -117,8 +132,12 @@ export interface JwksVerifier {
   ready(opts?: { strict?: boolean }): Promise<JwksStats>;
   /** 收掉定時器。之後再 ready() 會重新裝回去。 */
   stop(): void;
-  /** 手動重抓（有節流）。 */
-  refresh(): Promise<void>;
+  /**
+   * 手動重抓。預設**不節流** —— 「金鑰外洩 → 從 JWKS 下架 → refresh() 立刻
+   * 生效」這條路不能被靜默吃掉。設了 `minRefreshIntervalMs` 而真的節流到時，
+   * 回傳的 `throttled` 會是 true（不會假裝成功）。
+   */
+  refresh(): Promise<RefreshResult>;
   /** 等背景那次抓取結束（測試用）。 */
   whenIdle(): Promise<void>;
   /** 診斷狀態。放進健檢端點，但公開版要篩過（見 JwksStats.lastMissKid）。 */
@@ -131,7 +150,7 @@ export interface JwksVerifier {
 export interface JwksCache {
   getKey(kid: string): KeyObject | null;
   getKeyAsync(kid: string): Promise<KeyObject | null>;
-  refresh(): Promise<void>;
+  refresh(force?: boolean): Promise<RefreshResult>;
   whenIdle(): Promise<void>;
   stats(): JwksStats;
   start(): Promise<void>;

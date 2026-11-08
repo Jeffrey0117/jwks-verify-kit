@@ -197,15 +197,50 @@ test("start() 回第一次抓取的 promise,stop() 收掉定時器", async () =>
 
 // ── review 後補上的（2026-11-08）────────────────────────────────────────────
 
-test("手動 refresh() 有最小間隔（別讓宿主把它接成對 IdP 的放大器）", async () => {
+test("手動 refresh() 設了最小間隔就會節流，但**會講**（不再靜默假裝成功）", async () => {
   const impl = fakeFetch(JWKS);
   const cache = createJwksCache(cacheOpts({ fetchImpl: impl, minRefreshIntervalMs: 60_000 }));
-  await cache.refresh();
-  for (let i = 0; i < 20; i += 1) await cache.refresh();
+  const first = await cache.refresh();
+  assert.equal(first.refreshed, true);
+  assert.equal(first.throttled, false);
+  for (let i = 0; i < 20; i += 1) {
+    const r = await cache.refresh();
+    // 這一行是重點：節流掉的時候呼叫端拿得到 throttled:true。原本是回
+    // `undefined`，宿主 `await refresh()` 後完全無法分辨「抓過了」與「被吃掉」。
+    assert.equal(r.throttled, true, "節流要回報，不能靜默");
+    assert.equal(r.refreshed, false);
+  }
   assert.equal(impl.calls.length, 1, "節流後只該有第一次");
   // 內部的定時刷新/預熱走 force,不受節流影響
   await cache.start();
   assert.equal(impl.calls.length, 2);
+  cache.stop();
+});
+
+test("🔒 預設不節流手動 refresh()，否則緊急撤銷金鑰會被無聲吃掉", async () => {
+  // 劇本（這個 kit 存在的理由之一）：IdP 私鑰外洩 → 把金鑰從 JWKS 下架 →
+  // 宿主呼叫 refresh() 要它立刻生效。預設值一旦節流又靜默，被盜金鑰簽的
+  // token 會繼續通行到有人想起來重啟 process。
+  //
+  // ⚠️ 刻意**不用** cacheOpts()：這個檔案的共用選項把 minRefreshIntervalMs
+  // 設成 0，所以 81 個測試從來沒有一個跑在預設值上 —— 這個 bug 就是這樣躲過
+  // 全部測試的（靠真實消費端 speakslow-stats 的既有測試才掉出來）。
+  const impl = fakeFetch((n) => (n === 1 ? { keys: [toJwk(publicKey, "leaked-kid")] } : { keys: [] }));
+  const cache = createJwksCache({
+    url: "https://idp.test/jwks",
+    refreshMs: 0,
+    onError: () => {},
+    fetchImpl: impl,
+    // minRefreshIntervalMs 刻意不給 → 走預設值
+  });
+
+  await cache.refresh();
+  assert.ok(cache.getKey("leaked-kid"), "第一次抓到外洩的那把");
+
+  const second = await cache.refresh(); // 權威的空回應（金鑰已下架）
+  assert.equal(second.throttled, false, "預設不該節流");
+  assert.equal(impl.calls.length, 2, "第二次 refresh 必須真的發出請求");
+  assert.equal(cache.getKey("leaked-kid"), null, "被撤銷的金鑰必須立刻失效");
   cache.stop();
 });
 
