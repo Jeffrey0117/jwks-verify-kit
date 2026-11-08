@@ -77,7 +77,7 @@
     {
       "id": "app-secret-still-present",
       "severity": "warn",
-      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#))(?!.*(?:[wW]ebhook|HMAC|hmac|不需要|建議|移除)).*(?:LETMEUSE_APP_SECRET)",
+      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#))(?!.*(?:[wW]ebhook|WEBHOOK|HMAC|hmac|Hmac|不需要|建議|移除|正當用途)).*(?:LETMEUSE_APP_SECRET)",
       "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|env|example|json)$",
       "rule": "出現 LETMEUSE_APP_SECRET 的引用 —— 確認它是**哪一種用途**：驗使用者 token 已經不需要它（改 ES256 後只要 JWKS 公鑰），但 LetMeUse webhook 的 HMAC 驗章是正當用途，那種要留著。",
       "fix": "驗 token 用的話：拿掉程式碼的引用，再從該機器的 .env 移除（cloudpipe env API，vars 的值給 null 即刪鍵），並回頭讀 .env 確認真的生效 —— 那個 PUT 撞到部署佇列會回 504 但有可能延後才生效。webhook HMAC 用的話：在同一行加個註解說明用途，這條就不會再問。"
@@ -85,7 +85,7 @@
     {
       "id": "missing-await-on-verify-async",
       "severity": "critical",
-      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:=\\s*[\\w.]*\\.verifyAsync\\(|=\\s*[\\w.]*verifyJwtAsync\\(|=\\s*[\\w.]*\\.verify\\()",
+      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:=\\s*[\\w.]*\\.verifyAsync\\(|=\\s*[\\w.]*verifyJwtAsync\\()",
       "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "把非同步的驗證結果直接賦值（少了 await）。`if (!claims)` 會拿到一個 truthy 的 Promise → 請求被當成已驗證放行，而 claims.sub 是 undefined。（只比對 kit 自己的 API 名稱：生態系有同名的**同步**函式，比對泛用名字會一律誤報。）",
       "fix": "加 await。（這也是 jwks-verify-kit 不提供叫做 `verify` 的方法的原因 —— 短而順手的名字不該是這顆地雷。）"
