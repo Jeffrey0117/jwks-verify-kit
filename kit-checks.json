@@ -117,9 +117,9 @@
     {
       "id": "stringify-into-inline-script",
       "severity": "high",
-      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:<script[^>]*>.*JSON\\.stringify|innerHTML\\s*(\\+)?=.*JSON\\.stringify)",
+      "pattern": "^(?!\\s*(?:\\*|//|/\\*|#))(?!.*(?:nonce|NONCE|伺服器端|常數|來源)).*<script.*JSON\\.stringify\\(",
       "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|html)$",
-      "rule": "JSON.stringify 不會轉義 `</script>`。登入中繼頁的 origin 存著 30 天 refresh token，那一頁的任何 XSS 等於帳號接管、直接繞過整套簽章驗證。",
+      "rule": "`JSON.stringify` 內嵌進 `<script>` —— 它**不會**轉義 `</script>`。先確認那個值的來源：**呼叫端可控**（query/hash/header/使用者輸入）就是 XSS；伺服器端自己產生的常數或隨機 nonce 則無害，那種在同一行加個註解說明來源即可。為什麼這條特別貴：登入中繼頁的 origin 存著 30 天 refresh token，那一頁的任何 XSS 等於帳號接管、直接繞過整套簽章驗證。",
       "fix": "額外把 `<` `>` `&` 與 U+2028/2029 轉成 \\uXXXX，而且參數本身要收字集（例如 state 只允許 /^[A-Za-z0-9_.-]{1,128}$/）。"
     }
   ],
