@@ -38,6 +38,19 @@
 npm i github:Jeffrey0117/jwks-verify-kit
 ```
 
+CommonJS 與 ESM 都能用（`require` 與具名 `import` 都實測過），**自帶 TypeScript 宣告**（`index.d.ts`，不必裝 `@types`）。那份宣告不只是補型別，它會在編譯期擋掉兩個最貴的用錯法：
+
+```ts
+const claims = auth.verifyAsync(token)   // 忘了 await
+if (!claims) return 401                  // Promise 永遠 truthy → 全部放行
+//  ^ TS 在 claims.sub 那行就會報錯
+
+const c = auth.verifySync(token)
+return c.sub                             // ^ 報錯：c 可能是 null
+```
+
+`test/types/must-fail.ts` 用 `@ts-expect-error` 把這些寫法釘成「必須報錯」，所以型別沒鬆掉這件事本身也有測試。
+
 ## 用法
 
 ### LetMeUse（Jeff 生態系）

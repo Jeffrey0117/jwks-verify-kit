@@ -1,10 +1,11 @@
 {
   "name": "jwks-verify-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "驗外部 IdP 的非對稱 JWT（ES256/384/512）+ JWKS 公鑰快取，零依賴 fail-closed",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/verify.test.js test/jwks-cache.test.js test/verifier.test.js",
+    "test": "node --test test/verify.test.js test/jwks-cache.test.js test/verifier.test.js && npm run test:types",
+    "test:types": "tsc -p test/types/tsconfig.json",
     "example": "node example.js"
   },
   "keywords": [
@@ -21,6 +22,7 @@
   "license": "MIT",
   "files": [
     "index.js",
+    "index.d.ts",
     "src/",
     "example.js",
     "README.md",
@@ -34,5 +36,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Jeffrey0117/jwks-verify-kit.git"
+  },
+  "types": "index.d.ts",
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "@types/node": "^22.15.0"
   }
 }
