@@ -354,3 +354,45 @@ test("timeoutMs 共用單一期限（不是 fetch 與 json 各給一次）", asy
   assert.match(cache.stats().lastError, /timed out/);
   assert.ok(elapsed < 240, `總預算該是 ~120ms 而非 240ms,實際 ${elapsed}ms`);
 });
+
+test("🕒 注入時鐘能驅動政策計時（冷卻/stale），抓取逾時不受影響", async () => {
+  // 沒有這個注入，冷卻與 stale 只能用「設成 0」或「真的等 60 秒」來測 —— 於是
+  // 實務上沒人測，而 refresh() 節流的 bug 就是這樣躲過全部測試的。
+  let clock = 1_700_000_000_000;
+  let serve = "kid-old";
+  const impl = fakeFetch(() => ({ keys: [toJwk(publicKey, serve)] }));
+  const cache = createJwksCache({
+    url: "https://idp.test/jwks",
+    refreshMs: 0,               // 不要定時器,完全由 miss + 冷卻驅動
+    missCooldownMs: 60_000,
+    maxStaleMs: 10 * 60_000,
+    onError: () => {},
+    fetchImpl: impl,
+    now: () => clock,
+  });
+
+  await cache.refresh();
+  assert.ok(cache.getKey("kid-old"));
+  assert.equal(impl.calls.length, 1);
+
+  // 第一次遇到未知 kid 一定會抓（lastMissFetchAt 還是 0 = 從沒因 miss 抓過）,
+  // 這是對的:剛輪換出來的 kid 不該先等 60 秒。這次抓回來的還是 kid-old。
+  assert.equal(await cache.getKeyAsync("kid-unknown"), null);
+  assert.equal(impl.calls.length, 2, "第一次 miss 要抓");
+
+  // 冷卻計時從這裡開始。金鑰輪換了,但還在冷卻期內 → 不該再抓
+  serve = "kid-new";
+  assert.equal(await cache.getKeyAsync("kid-new"), null, "冷卻期內不重抓");
+  assert.equal(impl.calls.length, 2);
+
+  // 推進假時鐘越過冷卻 → 這次要抓,而且抓到輪換後的新 kid
+  clock += 61_000;
+  assert.ok(await cache.getKeyAsync("kid-new"), "冷卻過了就該抓到輪換後的金鑰");
+  assert.equal(impl.calls.length, 3);
+
+  // stale 判定也吃假時鐘
+  assert.equal(cache.stats().stale, false);
+  clock += 11 * 60_000;
+  assert.equal(cache.stats().stale, true, "超過 maxStaleMs 要標記 stale");
+  cache.stop();
+});

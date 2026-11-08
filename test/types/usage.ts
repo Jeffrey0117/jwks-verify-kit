@@ -104,3 +104,13 @@ const b: string | null = bearerToken("Bearer abc");
 void b;
 const algs: readonly string[] = SUPPORTED_ALGS;
 void algs;
+
+// ── 4. 快取的假時鐘（takeENGLISH 的對抗性快取測試用）────────────────────────
+let fakeClock = 1_700_000_000_000;
+const clocked = createJwksCache({
+  url: "https://idp.example.com/api/jwks",
+  now: () => fakeClock,
+  missCooldownMs: 60_000,
+});
+fakeClock += 61_000;
+void clocked.getKeyAsync("k1");

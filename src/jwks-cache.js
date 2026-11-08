@@ -91,6 +91,7 @@ function withTimeout(promise, ms) {
  *   refreshMs?: number,              // 0 = 不做定時刷新
  *   missCooldownMs?: number,
  *   minRefreshIntervalMs?: number,   // 手動 refresh() 的節流
+ *   now?: () => number,             // 注入時鐘（只影響政策計時，不影響抓取逾時）
  *   timeoutMs?: number,              // 0 = 不加逾時（只應在測試裡關掉）
  *   maxStaleMs?: number,             // 0 = 不做 stale fail-closed
  *   maxKeys?: number,
@@ -109,6 +110,14 @@ function createJwksCache(options = {}) {
   const timeoutMs = options.timeoutMs != null ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
   const maxStaleMs = options.maxStaleMs != null ? options.maxStaleMs : DEFAULT_MAX_STALE_MS;
   const maxKeys = options.maxKeys != null ? options.maxKeys : DEFAULT_MAX_KEYS;
+  // 可注入的時鐘，只影響「政策」計時（冷卻、stale 判定、節流），**不影響**抓取
+  // 逾時 —— 那個必須走真實掛鐘，否則假時鐘會把真的網路逾時一起關掉。
+  //
+  // 為什麼需要它：沒有假時鐘的話，冷卻/過期這類行為只能用「設成 0」或「等真的
+  // 60 秒」來測，於是實務上沒人測 → refresh() 節流那個 bug 就是這樣躲過 81 個
+  // 測試的。消費端（takeENGLISH）本來就有一整組用假時鐘寫的對抗性快取測試，
+  // 這個選項讓那些測試能直接對著 kit 跑。
+  const nowFn = typeof options.now === "function" ? options.now : Date.now;
   // 預設大聲：安靜的 fail-closed 就是無聲故障
   const onError = typeof options.onError === "function"
     ? options.onError
@@ -178,7 +187,7 @@ function createJwksCache(options = {}) {
       // 的 token，直到有人想起來重啟 —— 而這種 process 會活好幾週。
       // 真正該保留舊快取的只有「傳輸層失敗」，那些路徑在上面就 throw 了。
       keysByKid = next;
-      lastSuccessAt = Date.now();
+      lastSuccessAt = nowFn();
       lastError = null;
       if (next.size === 0) {
         report(new Error("JWKS 沒有任何可用的公鑰 —— 快取已清空，所有 token 會被拒絕"));
@@ -215,19 +224,19 @@ function createJwksCache(options = {}) {
   function refresh(force = false) {
     if (inFlight) return inFlight.then(() => ({ refreshed: true, throttled: false, coalesced: true, keys: keysByKid.size }));
     if (!force && minRefreshIntervalMs > 0 && lastAttemptAt > 0
-      && Date.now() - lastAttemptAt < minRefreshIntervalMs) {
+      && nowFn() - lastAttemptAt < minRefreshIntervalMs) {
       return Promise.resolve({ refreshed: false, throttled: true, coalesced: false, keys: keysByKid.size });
     }
     inFlight = doRefresh().finally(() => {
       inFlight = null;
       // 冷卻從「結束」算起：慢速或逾時的抓取若從開始算，等於完全沒冷卻
-      lastAttemptAt = Date.now();
+      lastAttemptAt = nowFn();
     });
     return inFlight.then(() => ({ refreshed: true, throttled: false, coalesced: false, keys: keysByKid.size }));
   }
 
   function isStale() {
-    return maxStaleMs > 0 && lastSuccessAt > 0 && Date.now() - lastSuccessAt > maxStaleMs;
+    return maxStaleMs > 0 && lastSuccessAt > 0 && nowFn() - lastSuccessAt > maxStaleMs;
   }
 
   /**
@@ -238,12 +247,12 @@ function createJwksCache(options = {}) {
    */
   function kickBackgroundRefresh() {
     if (inFlight) return { promise: inFlight, started: false };
-    if (Date.now() - lastMissFetchAt < missCooldownMs) return { promise: null, started: false };
+    if (nowFn() - lastMissFetchAt < missCooldownMs) return { promise: null, started: false };
     // 先卡住，擋掉一波未知 kid 同時湧進來；結束時再蓋一次（見下）
-    lastMissFetchAt = Date.now();
+    lastMissFetchAt = nowFn();
     // 冷卻用獨立的 lastMissFetchAt，不跟定時刷新共用 —— 共用的話，剛跑完的
     // 定時刷新會把冷卻洗掉，金鑰輪換要等整個 cooldown 才跟得上。
-    const promise = refresh(true).finally(() => { lastMissFetchAt = Date.now(); });
+    const promise = refresh(true).finally(() => { lastMissFetchAt = nowFn(); });
     return { promise, started: true };
   }
 

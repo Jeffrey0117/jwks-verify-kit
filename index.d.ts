@@ -89,6 +89,16 @@ export interface JwksCacheOptions {
   onError?: (err: Error) => void;
   /** false = 不在建構時就開始抓（之後自己呼叫 ready()）。 */
   autoStart?: boolean;
+  /**
+   * 注入時鐘（毫秒），只給 `createJwksCache` 用。
+   *
+   * 只影響「政策」計時：未知 kid 的重抓冷卻、stale 判定、手動 refresh 的節流。
+   * **不影響抓取逾時** —— 那個走真實掛鐘，否則假時鐘會把真的網路逾時一起關掉。
+   *
+   * ⚠️ 不要跟 `verifyJwt` 的 `now` 搞混：那個是**秒**、是數字，用來覆寫 exp/nbf
+   * 的判斷時點。`createJwksVerifier` 兩個都不收（要假時鐘請直接用低階積木）。
+   */
+  now?: () => number;
 }
 
 export interface VerifyClaimOptions {
@@ -107,7 +117,7 @@ export interface VerifyClaimOptions {
   clockToleranceSec?: number;
 }
 
-export type JwksVerifierOptions = JwksCacheOptions & VerifyClaimOptions;
+export type JwksVerifierOptions = Omit<JwksCacheOptions, "now"> & VerifyClaimOptions;
 
 export interface JwksVerifier {
   /**
