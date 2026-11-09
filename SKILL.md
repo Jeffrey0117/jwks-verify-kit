@@ -19,8 +19,38 @@ description: Use when a service needs to VERIFY access tokens issued by an exter
 ## 接線（照抄能跑）
 
 ```bash
-npm i github:Jeffrey0117/jwks-verify-kit
+# 一律釘版本（見下面「升級」那節的理由）
+npm i github:Jeffrey0117/jwks-verify-kit#v0.4.5
 ```
+
+### 升級（釘了版本就必須主動做，不然永遠停在舊版）
+
+生態系的十二個消費端**都釘了固定版本**（2026-11-09 起）。理由：沒有 ref 的
+`github:Jeffrey0117/jwks-verify-kit` 等於「推一次這個 repo 的 master，就直接進到
+十二個服務的認證路徑，沒有任何 review 關卡」。對一個驗證使用者身分的依賴來說，那
+個關卡應該要有。
+
+**代價是 kit 修了 bug 不會自動流下去**，所以：
+
+1. 這個 repo 每次有改動就 bump `package.json` 的 version 並打 annotated tag
+   （`git tag -a vX.Y.Z -m "…" && git push --tags`）。
+2. **安全性修正**要主動掃一輪消費端，不要等到下次剛好改到那個專案：
+   ```bash
+   npx github:Jeffrey0117/kit-kit audit jwks-verify-kit   # 「版本落後」就是清單
+   ```
+   逐個 `npm install github:Jeffrey0117/jwks-verify-kit#vX.Y.Z`（pnpm 專案用
+   `pnpm add`）→ 跑那個專案自己的測試 → commit + 部署。
+3. 「版本落後」這行以前沒有意義（永遠是最新），**現在它才是訊號**。
+
+cloudpipe 核心刻意釘 **commit sha** 而不是 tag：其他十一個專案的
+`package-lock.json` 有進 git，裡面記著解析後的 commit，所以就算 tag 被移動，既有安
+裝也不會悄悄換碼；而 cloudpipe 的 lockfile 是 gitignore 的，沒有那層後盾，而它是權
+限最大的那個服務。
+
+升級時若測試炸了，**先懷疑 kit**（見下面「回套既有專案時」）。2026-11-08 的 0.4.0
+就是一個 breaking change：`createJwksCache` 的網址為空／無效／非 https 改成建構時
+throw，有兩個專案的測試 fixture 用了 `http://jwks.test/...`（假主機配注入的
+fetchImpl）因此變紅 —— 那是 fixture 要改成 https，不是 kit 錯。
 
 ```js
 const { createLetMeUseVerifier } = require('jwks-verify-kit');
