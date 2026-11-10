@@ -1,12 +1,12 @@
 {
   "_schema": "kit-kit audit.js 的格式：{ id, rule, fix, pattern, files, severity }。pattern 與 files 都是 JS RegExp 字串（無 flags），pattern 逐行比對，files 比對專案內的相對路徑。audit 本身已排除 *.md / test/ / docs/ / example.js / kit-checks.json。",
-  "_files_note": "排除測試/e2e/腳本目錄：那些地方會**刻意**偽造 HS256 token、讀 APP_SECRET 來鑄測試 token，正是在證明壞東西被擋掉 —— 報它們等於懲罰有寫測試的專案（實測 upimg/takeenglish/speakslow-stats/plottr 都因此誤報過）。",
+  "_files_note": "排除測試/e2e/腳本目錄,以及根目錄的 test-*.js / *-test.js：那些地方會**刻意**偽造 HS256 token、讀 APP_SECRET 來鑄測試 token,正是在證明壞東西被擋掉 —— 報它們等於懲罰有寫測試的專案（實測 upimg/takeenglish/speakslow-stats/plottr 都因此誤報過,paygate 的根目錄驗證腳本也是）。不需要再寫 ^(?!projects/)：kit-kit 的 audit 從 2026-11-10 起不會把「本身就是獨立受稽核專案」的子目錄算進母專案（cloudpipe/projects/plottr 那種),那段繞法已經移除。",
   "checks": [
     {
       "id": "hs256-in-verify-path",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:['\"]HS256['\"])",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "驗證外部 IdP 的 token 時不得接受 HS256。對稱簽章等於驗證方必須握著簽發金鑰 —— secret 一外洩就能自簽任意 sub/role 冒充任何人（pokkit 2026-10-25 根因）。",
       "fix": "改用 jwks-verify-kit（只收 ES256，驗證方零 secret）。⚠️ 若這一行是「本服務自己發、自己驗的 session token」（auth-kit 情境，例如 lurlhub），那是合法用途，忽略本條。"
     },
@@ -14,7 +14,7 @@
       "id": "app-claim-fail-open",
       "severity": "critical",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:if\\s*\\([^)]*\\b(appId|appID|APP_ID|expectedApp)\\s*&&|\\b(payload|claims|decoded|token)\\.app\\s*&&)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "租戶 claim 寫成條件式。IdP 用同一把金鑰簽發所有 app 的 token，所以 app claim 是唯一的租戶邊界：`if (appId && payload.app && payload.app !== appId)` 會讓「自己忘了設 APP_ID」和「token 沒帶 app claim」兩種情況都變成放行全部。",
       "fix": "appId 沒設就一律拒絕、沒帶 app claim 就拒絕。用 jwks-verify-kit 的 requiredClaims（期望值為空 = 拒絕全部）或多租戶的 allowedClaims（空陣列 = 拒絕全部）。"
     },
@@ -22,7 +22,7 @@
       "id": "claims-check-type-fail-open",
       "severity": "critical",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:\\b(required|requiredClaims|allowed|allowedClaims|claims)\\s*&&\\s*typeof\\s+\\w+\\s*===\\s*['\"]object['\"])",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "`if (required && typeof required === 'object')` 這種守衛會讓任何非物件值（例如忘了 JSON.parse 的 '{\"app\":\"x\"}' 字串、或從 env 直接讀來的值）整個檢查消失 —— 而測試照樣全綠。",
       "fix": "型別錯誤要 fail-closed（回 null）或在建構時就 throw，不能默默跳過。jwks-verify-kit 兩邊都做了。"
     },
@@ -30,7 +30,7 @@
       "id": "exp-conditional-check",
       "severity": "critical",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:typeof\\s+\\w+\\.exp\\s*===\\s*['\\\"]number['\\\"]\\s*&&|!\\s*\\w+\\.exp\\s*\\|\\||\\b(payload|claims|decoded|parsed|token|p)\\.exp\\s*&&)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "exp 是條件式檢查 → 沒有 exp 的 token 等於永不過期。三種壞形狀：`payload.exp && payload.exp*1000 < Date.now()`（沒 exp 直接放行，生態系最常見）、`typeof exp === 'number' &&`（同上）、`!payload.exp ||`（沒 exp 會擋，但字串型 exp 兩邊都躲過：`!\"abc\"` 是 false、`\"abc\"*1000` 的 NaN 比較也是 false）。短 exp 往往是這套設計唯一的撤銷機制。",
       "fix": "exp 必須『必填且是有限數字』：`if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) return null`。用 jose 的 jwtVerify 也要明確要求它（預設不要求 exp 存在）：`jwtVerify(token, jwks, { algorithms:['ES256'], requiredClaims:['exp'] })`。"
     },
@@ -38,7 +38,7 @@
       "id": "jwks-first-key-fallback",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:\\|\\|\\s*(data\\.)?keys\\[0\\]|\\|\\|\\s*\\w+\\.values\\(\\)\\.next\\(\\)\\.value)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "kid 不符時退回 JWKS 的第一把金鑰。輪換期間這會讓已從 JWKS 下架的金鑰繼續生效（selfize lmu.js 的舊寫法，實測「簽章正確但 kid 不存在」的 token 會被放行）。",
       "fix": "未知 kid 必須拒絕，並在背景觸發一次重抓（有獨立冷卻）。"
     },
@@ -46,7 +46,7 @@
       "id": "jwks-fetch-without-timeout",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:fetch\\([^)]*[jJ][wW][kK][sS]|fetch\\([^)]*well-known)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "手寫的 JWKS fetch。node 的 fetch 沒有預設逾時：對方接了連線卻不回應時 promise 永不 settle、in-flight 旗標永久占住 → 快取再也不更新、全部 401 且零診斷。",
       "fix": "改用 jwks-verify-kit（AbortSignal + Promise.race 雙層保護，且逾時計時器刻意不 unref）。"
     },
@@ -54,7 +54,7 @@
       "id": "empty-jwks-not-replacing",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:if\\s*\\(\\s*(next|fresh|parsed|incoming|newKeys)\\.(size|length)\\s*>\\s*0\\s*\\))",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "空的 JWKS 不覆蓋舊快取 → 緊急撤銷金鑰永遠不生效（IdP 私鑰外洩、把金鑰下架之後，這邊還拿著舊公鑰繼續放行幾週）。",
       "fix": "格式正確的 200 就是權威答案，即使 keys 是空的也要整批換掉；該保留舊快取的只有傳輸層失敗。"
     },
@@ -62,7 +62,7 @@
       "id": "jwks-url-plain-http",
       "severity": "critical",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:(jwksUrl|JWKS_URL|jwks_uri)\\s*[:=]\\s*['\"]http://(?!localhost|127\\.0\\.0\\.1|\\[::1\\]))",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|env|example)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|env|example)$",
       "rule": "JWKS 走明文 http（且不是 localhost）。這個回應就是信任根 —— 同網段上任何人都能換掉公鑰、替任何使用者簽 token，一個字元換來完整的認證繞過。",
       "fix": "改 https。同機直連 localhost 是可以的；真的需要對外明文請明確傳 allowInsecureHttp: true 並寫下理由。"
     },
@@ -70,7 +70,7 @@
       "id": "machine-identity-as-user-jwt",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:['\"]?sub['\"]?\\s*:\\s*['\"](usr_|user_)[^'\"]*(mcp|admin|service|bot)|setExpirationTime\\(\\s*['\"](\\d{2,}d|\\d+y))",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "機器憑證做成「自簽的長期使用者 JWT」。這錯兩次：逼得驗證端必須支援對稱簽章（＝保留 pokkit 那個洞），又把機器假扮成人（areyoubot 的 AREYOUBOT_SERVICE_TOKEN 原本就是一把一年期 HS256 JWT，sub=usr_mcp_admin）。",
       "fix": "機器憑證用不透明隨機字串 + timingSafeEqual 比對（參考 workr 的 WORKR_API_KEY、plottr 的 PLOTTR_API_KEY），並給它自己的身分而不是假扮使用者。"
     },
@@ -78,7 +78,7 @@
       "id": "app-secret-still-present",
       "severity": "warn",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#))(?!.*(?:[wW]ebhook|WEBHOOK|HMAC|hmac|Hmac|不需要|建議|移除|正當用途)).*(?:LETMEUSE_APP_SECRET)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|env|example|json)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|env|example|json)$",
       "rule": "出現 LETMEUSE_APP_SECRET 的引用 —— 確認它是**哪一種用途**：驗使用者 token 已經不需要它（改 ES256 後只要 JWKS 公鑰），但 LetMeUse webhook 的 HMAC 驗章是正當用途，那種要留著。",
       "fix": "驗 token 用的話：拿掉程式碼的引用，再從該機器的 .env 移除（cloudpipe env API，vars 的值給 null 即刪鍵），並回頭讀 .env 確認真的生效 —— 那個 PUT 撞到部署佇列會回 504 但有可能延後才生效。webhook HMAC 用的話：在同一行加個註解說明用途，這條就不會再問。"
     },
@@ -86,7 +86,7 @@
       "id": "missing-await-on-verify-async",
       "severity": "critical",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:=\\s*[\\w.]*\\.verifyAsync\\(|=\\s*[\\w.]*verifyJwtAsync\\()",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "把非同步的驗證結果直接賦值（少了 await）。`if (!claims)` 會拿到一個 truthy 的 Promise → 請求被當成已驗證放行，而 claims.sub 是 undefined。（只比對 kit 自己的 API 名稱：生態系有同名的**同步**函式，比對泛用名字會一律誤報。）",
       "fix": "加 await。（這也是 jwks-verify-kit 不提供叫做 `verify` 的方法的原因 —— 短而順手的名字不該是這顆地雷。）"
     },
@@ -94,7 +94,7 @@
       "id": "per-call-verify-override",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:\\.verifySync\\([^,)]+,|\\.verifyAsync\\([^,)]+,)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "給 verifySync / verifyAsync 傳了第二個參數。這個 kit 刻意不支援「每次呼叫覆寫選項」—— 淺層 spread 會讓呼叫端把建構時設好的 requiredClaims / issuer / exp 檢查整個換掉，而形狀很自然（「這條路由還要額外 role: admin」）。",
       "fix": "要逐路由加條件就另建一個 verifier（它們共用不了快取的話，傳同一個 createJwksCache 實例的 getKey 進低階的 verifyJwt）。"
     },
@@ -102,7 +102,7 @@
       "id": "numeric-option-from-env-unchecked",
       "severity": "warn",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:(timeoutMs|maxStaleMs|refreshMs|missCooldownMs|clockToleranceSec|maxKeys)\\s*:\\s*(Number|parseInt|parseFloat)\\([^)]*\\)(?!\\s*(\\|\\||\\?\\?)))",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "數字選項直接從 env 轉換。env 沒設時 `Number(undefined)` 是 NaN，而非正值會關掉對應的保護（逾時消失 → 卡死的 fetch 永久凍結快取）。",
       "fix": "jwks-verify-kit 現在會在建構時 throw，所以這會變成開機就掛 —— 比靜默關掉保護好，但還是給個預設值：`Number(process.env.X) || 5000`。"
     },
@@ -110,7 +110,7 @@
       "id": "token-string-as-cache-key",
       "severity": "medium",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#)).*(?:(revoked|blacklist|denylist|replay|idempotenc|seen)\\w*\\.(has|get|set|add|includes)\\(\\s*token\\b|\\bkey\\s*[:=]\\s*token\\b)",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx)$",
       "rule": "用 token 字串當 key。ES256 簽章有 16 種等價的 base64url 寫法（kit 已擋掉非正規化的 15 種），但 ECDSA 的 (r, n−s) 也驗得過且無法靠編碼正規化解決 → 撤銷黑名單／重放快取／限流桶都能被持有一顆有效 token 的人繞過。",
       "fix": "改用 jti；沒有 jti 就用 (sub, iat)。唯一可靠的唯一性只能來自 IdP 自己發的 id。"
     },
@@ -118,7 +118,7 @@
       "id": "stringify-into-inline-script",
       "severity": "high",
       "pattern": "^(?!\\s*(?:\\*|//|/\\*|#))(?!.*(?:nonce|NONCE|伺服器端|常數|來源)).*<script.*JSON\\.stringify\\(",
-      "files": "^(?!projects/)(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|html)$",
+      "files": "^(?!.*(?:(?:^|/)(?:test|tests|e2e|scripts|__tests__|__mocks__|fixtures)/))(?!(?:.*/)?test-[^/]*$)(?!(?:.*/)?[^/]*-test.[jt]sx?$)(?!.*(?:__tests__|__mocks__|\\.test\\.|\\.spec\\.|\\.fixture\\.|node_modules|\\.next/|dist/|build/|coverage/)).*\\.(js|cjs|mjs|ts|tsx|html)$",
       "rule": "`JSON.stringify` 內嵌進 `<script>` —— 它**不會**轉義 `</script>`。先確認那個值的來源：**呼叫端可控**（query/hash/header/使用者輸入）就是 XSS；伺服器端自己產生的常數或隨機 nonce 則無害，那種在同一行加個註解說明來源即可。為什麼這條特別貴：登入中繼頁的 origin 存著 30 天 refresh token，那一頁的任何 XSS 等於帳號接管、直接繞過整套簽章驗證。",
       "fix": "額外把 `<` `>` `&` 與 U+2028/2029 轉成 \\uXXXX，而且參數本身要收字集（例如 state 只允許 /^[A-Za-z0-9_.-]{1,128}$/）。"
     }
