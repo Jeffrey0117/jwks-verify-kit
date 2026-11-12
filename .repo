@@ -1,0 +1,10 @@
+{
+  "repo": 1,
+  "name": "jwks-verify-kit",
+  "what": "驗外部 IdP 的非對稱 JWT（ES256/384/512）+ JWKS 公鑰快取，零依賴 fail-closed",
+  "kind": "kit",
+  "work": {
+    "guide": "README.md",
+    "test": "npm test"
+  }
+}
