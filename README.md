@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.svg" width="96" height="96" alt="jwks-verify-kit logo">
+</p>
+
 # jwks-verify-kit
 
 **當消費端，驗別人家 IdP 發的非對稱 JWT。** 公鑰走 JWKS，零依賴（只用 node 內建 `crypto`），fail-closed。
