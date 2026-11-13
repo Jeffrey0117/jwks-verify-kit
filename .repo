@@ -6,5 +6,43 @@
   "work": {
     "guide": "README.md",
     "test": "npm test"
-  }
+  },
+  "offers": [
+    {
+      "id": "create_letmeuse_verifier",
+      "what": "驗 LetMeUse 發的 ES256 access token：回傳的 verifier 有 verifySync / verifyAsync / bearer / ready / stats。appId 必填，缺了直接 throw，因為 app claim 是唯一的租戶邊界；開機要先 await ready() 預熱。",
+      "how": "import",
+      "import": "const { createLetMeUseVerifier } = require('jwks-verify-kit')"
+    },
+    {
+      "id": "create_jwks_verifier",
+      "what": "驗任何外部 IdP 發的非對稱 JWT（ES256/384/512），公鑰走 JWKS，可設 issuer、requiredClaims、allowedClaims（多租戶）。回傳同一組 verifier 方法；Next.js / serverless 用 await verifyAsync()，沒有叫 verify 的方法，忘了 await 會全部放行。",
+      "how": "import",
+      "import": "const { createJwksVerifier } = require('jwks-verify-kit')"
+    },
+    {
+      "id": "bearer_token",
+      "what": "從 Authorization header 取出 Bearer token，取不到回 null（scheme 不分大小寫）。自己組驗證流程、沒有 verifier 實例時用；有 verifier 就直接用 verifier.bearer()。",
+      "how": "import",
+      "import": "const { bearerToken } = require('jwks-verify-kit')"
+    },
+    {
+      "id": "create_jwks_cache",
+      "what": "低階積木：只要 JWKS 公鑰快取（定時刷新、未知 kid 冷卻、逾時、stale 上限、stats），自己管驗證流程時用。JWKS 網址必須是 https，localhost 例外。",
+      "how": "import",
+      "import": "const { createJwksCache } = require('jwks-verify-kit')"
+    },
+    {
+      "id": "verify_jwt",
+      "what": "低階積木：對單顆 token 做驗章與 claim 檢查，verifyJwt 同步、verifyJwtAsync 非同步，金鑰由呼叫端提供。一般接線用 createJwksVerifier 就好，只有自己管快取時才用這個。",
+      "how": "import",
+      "import": "const { verifyJwt, verifyJwtAsync } = require('jwks-verify-kit')"
+    },
+    {
+      "id": "skill",
+      "what": "服務要驗外部 IdP（LetMeUse、Auth0、Clerk、Keycloak）發的 access token，或要稽核既有驗證器有沒有 fail-open 時載入的打法。不是用來自己發 session，那是 auth-kit。",
+      "how": "skill",
+      "skill": "jwks-verify-kit"
+    }
+  ]
 }
